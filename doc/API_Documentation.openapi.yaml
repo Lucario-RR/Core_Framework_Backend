@@ -1,0 +1,4040 @@
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: Core User Management API
+  version: 1.0.0-draft
+  summary: Reusable OpenAPI 3.1 contract for account lifecycle, authentication, user profile management, MFA, passkeys, admin user operations, and privacy preferences.
+  description: |
+    Canonical OpenAPI 3.1 contract for the reusable core user-management layer in this repository.
+
+    This spec intentionally excludes the PriceTracker business-domain APIs such as catalog, shops, prices,
+    purchases, comparisons, watchlists, alerts, and moderation of price submissions.
+
+    The retained surface is limited to reusable platform concerns:
+
+    - registration, login, logout, refresh, password reset, and MFA completion
+    - current-user profile, avatar attachment, and contact management
+    - passkeys, TOTP MFA, recovery codes, and security summary
+    - account-owned private file handling needed by the core, such as avatars or export packages
+    - admin user management and system settings
+    - legal document discovery, privacy consent capture, and cookie preferences
+
+    Contract conventions:
+
+    - IDs use `format: uuid`
+    - timestamps use `format: date-time` in UTC
+    - default currency uses ISO 4217 alpha-3 codes
+    - response bodies use `camelCase`
+    - successful responses use `{ data, meta }`
+    - error responses use `{ error }`
+    - request DTOs reject unknown fields unless explicitly stated otherwise
+servers:
+  - url: https://api.example.com/api/v1
+    description: Production
+  - url: http://localhost:11451/api/v1
+    description: Local development
+tags:
+  - name: Auth
+    description: Account registration, login, refresh, logout, password reset, and login-time MFA flows.
+  - name: Users
+    description: Signed-in user profile, avatar attachment, and current-account summary endpoints.
+  - name: Files
+    description: Private file upload and download flows for core account-owned files such as avatars and export packages.
+  - name: IdentitySecurity
+    description: MFA, passkeys, emails, phones, sessions, and other account security operations.
+  - name: Privacy
+    description: Legal document discovery, privacy consent recording, and cookie preference management.
+  - name: AdminUsers
+    description: Admin-only user listing, creation, updates, and bulk account lifecycle actions.
+  - name: AdminSettings
+    description: Admin-only overview and system settings management for the reusable core.
+  - name: AdminSecurity
+    description: Admin-only security-event, audit-log, session, and role-management endpoints.
+paths:
+  /auth/register:
+    post:
+      tags:
+        - Auth
+      operationId: register
+      summary: Register a new user account
+      description: Create a standard user account, capture required legal document acceptances, and issue an authenticated session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            examples:
+              default:
+                value:
+                  email: alex@example.com
+                  password: StrongPassword!234
+                  displayName: Alex
+                  primaryPhone: '+447700900123'
+                  acceptedLegalDocuments:
+                    - documentKey: terms_of_service
+                      version: '2026-04-01'
+                    - documentKey: privacy_policy
+                      version: '2026-04-01'
+      responses:
+        '201':
+          description: Account created and authenticated session issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /auth/register-admin:
+    post:
+      tags:
+        - Auth
+      operationId: registerAdminBootstrap
+      summary: Register an initial admin account
+      description: Setup-only bootstrap route. Keep it behind a deployment flag and disable it outside controlled setup flows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Admin account created and authenticated session issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      operationId: login
+      summary: Authenticate with email and password
+      description: Authenticate a user. If MFA is enabled, the server returns a challenge instead of a session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              default:
+                value:
+                  email: alex@example.com
+                  password: StrongPassword!234
+                  rememberMe: true
+      responses:
+        '200':
+          description: Authenticated session returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionEnvelope'
+        '202':
+          description: Second factor required before a session can be issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaChallengeEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/refresh:
+    post:
+      tags:
+        - Auth
+      operationId: refreshSession
+      summary: Refresh an access token
+      description: Renew the short-lived access token using the current refresh cookie and CSRF token.
+      security:
+        - refreshTokenCookie: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: Access token refreshed and cookie renewed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/logout:
+    post:
+      tags:
+        - Auth
+      operationId: logout
+      summary: Invalidate the current session
+      description: Invalidate the active session and expire the session cookie when one exists.
+      security:
+        - bearerAuth: []
+        - refreshTokenCookie: []
+          csrfHeader: []
+      responses:
+        '204':
+          description: Session invalidated
+  /auth/password/change:
+    post:
+      tags:
+        - Auth
+      operationId: changePassword
+      summary: Change the current password
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeRequest'
+      responses:
+        '200':
+          description: Password changed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /auth/password/forgot:
+    post:
+      tags:
+        - Auth
+      operationId: startPasswordReset
+      summary: Start the password reset flow
+      description: Start a reset flow for a login-enabled email address. Clients should display a neutral confirmation message whether or not the account exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordForgotRequest'
+      responses:
+        '202':
+          description: Reset flow accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+  /auth/password/reset:
+    post:
+      tags:
+        - Auth
+      operationId: completePasswordReset
+      summary: Complete the password reset flow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+      responses:
+        '204':
+          description: Password reset completed
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /auth/email/verify:
+    post:
+      tags:
+        - Auth
+      operationId: verifyEmailChallenge
+      summary: Verify an email challenge and activate the related email
+      description: Verify a registration or email-change challenge. This endpoint is intended for email-link or emailed-code completion flows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailVerificationConfirmRequest'
+      responses:
+        '200':
+          description: Email verified successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /auth/email/resend:
+    post:
+      tags:
+        - Auth
+      operationId: resendPrimaryEmailVerification
+      summary: Resend a primary email verification challenge
+      description: Start or resend a primary-account email verification challenge for registration or re-verification flows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailVerificationResendRequest'
+      responses:
+        '202':
+          description: Verification challenge accepted for delivery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+  /auth/mfa/verify:
+    post:
+      tags:
+        - Auth
+      operationId: verifyMfaChallenge
+      summary: Verify an MFA challenge
+      description: Complete a login challenge using TOTP or a recovery code.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MfaVerifyRequest'
+      responses:
+        '200':
+          description: MFA verified and authenticated session issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/passkeys/authentication/options:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: createPasskeyAuthenticationOptions
+      summary: Create a WebAuthn authentication challenge
+      description: Create a passkey authentication ceremony payload for the browser.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasskeyAuthenticationOptionsRequest'
+      responses:
+        '200':
+          description: WebAuthn authentication options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyAuthenticationOptionsEnvelope'
+  /auth/passkeys/authentication/verify:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: verifyPasskeyAuthentication
+      summary: Verify a WebAuthn authentication result
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasskeyAuthenticationVerifyRequest'
+      responses:
+        '200':
+          description: Passkey verified and authenticated session issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me:
+    get:
+      tags:
+        - Users
+      operationId: getMe
+      summary: Get the current user profile
+      description: Return the authenticated user's profile, roles, scopes, and current security summary.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags:
+        - Users
+      operationId: updateMe
+      summary: Update the current user profile
+      description: Update editable profile and presentation settings. Clients may send `If-Match` for optimistic concurrency.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileUpdateRequest'
+      responses:
+        '200':
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+  /me/avatar:
+    post:
+      tags:
+        - Users
+      operationId: setAvatar
+      summary: Attach a caller-owned file as the active avatar
+      description: The referenced file must already belong to the caller and be valid for avatar use.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvatarUpdateRequest'
+      responses:
+        '200':
+          description: Updated profile with active avatar
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags:
+        - Users
+      operationId: removeAvatar
+      summary: Remove the active avatar
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Updated profile without an avatar
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/account/deactivate:
+    post:
+      tags:
+        - Users
+      operationId: deactivateOwnAccount
+      summary: Deactivate the current account
+      description: Deactivate the signed-in account. This is intended for self-service deactivation and can be paired with a later deletion or privacy request workflow.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeactivateRequest'
+      responses:
+        '200':
+          description: Account deactivated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /files/uploads:
+    post:
+      tags:
+        - Files
+      operationId: createFileUploadIntent
+      summary: Create a signed private file upload intent
+      description: Create a signed upload intent for account-owned private files such as user avatars or generated export packages.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileUploadIntentRequest'
+      responses:
+        '201':
+          description: Upload intent created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileUploadIntentEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /files/uploads/{fileId}/complete:
+    post:
+      tags:
+        - Files
+      operationId: completeFileUpload
+      summary: Finalize a signed file upload
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/FileIdPath'
+      responses:
+        '200':
+          description: File metadata after successful upload completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileRecordEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/files/{fileId}:
+    get:
+      tags:
+        - Files
+      operationId: getOwnFile
+      summary: Get metadata for one caller-owned file
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/FileIdPath'
+      responses:
+        '200':
+          description: File metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileRecordEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/files/{fileId}/download:
+    get:
+      tags:
+        - Files
+      operationId: getOwnFileDownload
+      summary: Get a short-lived signed download URL
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/FileIdPath'
+      responses:
+        '200':
+          description: Signed download URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileDownloadEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/sessions:
+    get:
+      tags:
+        - IdentitySecurity
+      operationId: listOwnSessions
+      summary: List active sessions for the current account
+      description: Return active and recently active sessions with device, IP, and last-seen metadata.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Session list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/sessions/revoke-all:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: revokeAllOwnSessions
+      summary: Revoke all sessions for the current account
+      description: Revoke all sessions or all sessions except the current one, depending on the requested scope.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionBulkRevokeRequest'
+      responses:
+        '200':
+          description: Sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/sessions/{sessionId}:
+    delete:
+      tags:
+        - IdentitySecurity
+      operationId: revokeOwnSession
+      summary: Revoke one session belonging to the current account
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SessionIdPath'
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/security:
+    get:
+      tags:
+        - IdentitySecurity
+      operationId: getMySecuritySummary
+      summary: Get current security status
+      description: Return summary state needed by an account security page, such as MFA enablement and passkey count.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Security summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSecuritySummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/security/events:
+    get:
+      tags:
+        - IdentitySecurity
+      operationId: listOwnSecurityEvents
+      summary: List recent security events for the current account
+      description: Return recent login, MFA, password, and session events visible to the current account.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Security event list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityEventListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/security/reports:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: createOwnSecurityReport
+      summary: Report suspicious login or account activity
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecurityReportCreateRequest'
+      responses:
+        '201':
+          description: Security report created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/passkeys:
+    get:
+      tags:
+        - IdentitySecurity
+      operationId: listPasskeys
+      summary: List registered passkeys
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Passkey list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/passkeys/registration/options:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: createPasskeyRegistrationOptions
+      summary: Create a WebAuthn registration challenge
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasskeyRegistrationOptionsRequest'
+      responses:
+        '200':
+          description: WebAuthn registration options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyRegistrationOptionsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/passkeys/registration/verify:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: verifyPasskeyRegistration
+      summary: Verify a WebAuthn registration result
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasskeyRegistrationVerifyRequest'
+      responses:
+        '201':
+          description: Passkey registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/passkeys/{passkeyId}:
+    delete:
+      tags:
+        - IdentitySecurity
+      operationId: deletePasskey
+      summary: Delete one registered passkey
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PasskeyIdPath'
+      responses:
+        '204':
+          description: Passkey deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/mfa/totp/setup:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: createTotpSetup
+      summary: Create a TOTP provisioning payload
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: TOTP secret and QR payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpSetupEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/mfa/totp/enable:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: enableTotp
+      summary: Verify a TOTP code and enable MFA
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TotpEnableRequest'
+      responses:
+        '200':
+          description: Updated security summary after enabling TOTP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSecuritySummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/mfa/totp/disable:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: disableTotp
+      summary: Disable TOTP-based MFA
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationCodeRequest'
+      responses:
+        '200':
+          description: Updated security summary after disabling TOTP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSecuritySummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/mfa/recovery-codes/rotate:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: rotateRecoveryCodes
+      summary: Replace the current recovery code set
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: New recovery codes generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodeListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/emails:
+    get:
+      tags:
+        - IdentitySecurity
+      operationId: listEmails
+      summary: List the caller email addresses
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Email address list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailAddressListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: createEmail
+      summary: Add a secondary email address
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailAddressCreateRequest'
+      responses:
+        '201':
+          description: Secondary email created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailAddressEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /me/emails/{emailId}:
+    delete:
+      tags:
+        - IdentitySecurity
+      operationId: deleteEmail
+      summary: Delete one email address
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/EmailIdPath'
+      responses:
+        '204':
+          description: Email deleted
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/emails/{emailId}/verify:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: verifyEmail
+      summary: Verify one email address
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/EmailIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationCodeRequest'
+      responses:
+        '200':
+          description: Verified email address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailAddressEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/emails/{emailId}/make-primary:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: makeEmailPrimary
+      summary: Make one verified email primary
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/EmailIdPath'
+      responses:
+        '200':
+          description: Updated primary email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailAddressEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/emails/{emailId}/resend-verification:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: resendEmailVerification
+      summary: Resend a verification challenge for one email address
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/EmailIdPath'
+      responses:
+        '202':
+          description: Verification challenge accepted for delivery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/email-change-requests:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: createEmailChangeRequest
+      summary: Start a primary email change flow
+      description: Start a dual-confirmation email change flow. The backend can require confirmation on both the old and new addresses before switching the primary login email.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailChangeRequestCreateRequest'
+      responses:
+        '201':
+          description: Email change flow started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /me/phones:
+    get:
+      tags:
+        - IdentitySecurity
+      operationId: listPhones
+      summary: List the caller phone numbers
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Phone number list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneNumberListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: createPhone
+      summary: Add a phone number
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneNumberCreateRequest'
+      responses:
+        '201':
+          description: Phone number created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneNumberEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /me/phones/{phoneId}:
+    delete:
+      tags:
+        - IdentitySecurity
+      operationId: deletePhone
+      summary: Delete one phone number
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PhoneIdPath'
+      responses:
+        '204':
+          description: Phone number deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/phones/{phoneId}/verify:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: verifyPhone
+      summary: Verify one phone number
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PhoneIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationCodeRequest'
+      responses:
+        '200':
+          description: Verified phone number
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneNumberEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/phones/{phoneId}/make-primary:
+    post:
+      tags:
+        - IdentitySecurity
+      operationId: makePhonePrimary
+      summary: Make one verified phone number primary
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PhoneIdPath'
+      responses:
+        '200':
+          description: Updated primary phone number
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneNumberEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /legal/documents:
+    get:
+      tags:
+        - Privacy
+      operationId: listLegalDocuments
+      summary: List current legal documents and versions
+      description: Return the current published versions of legal or policy documents that the core user system requires or records.
+      responses:
+        '200':
+          description: Legal document list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegalDocumentListEnvelope'
+  /me/privacy-consents:
+    get:
+      tags:
+        - Privacy
+      operationId: listPrivacyConsents
+      summary: List the caller accepted legal document versions
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Accepted legal document versions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacyConsentListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - Privacy
+      operationId: createPrivacyConsents
+      summary: Record acceptance of updated legal documents
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrivacyConsentCreateRequest'
+      responses:
+        '201':
+          description: Accepted document versions recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacyConsentListEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/privacy-requests:
+    get:
+      tags:
+        - Privacy
+      operationId: listPrivacyRequests
+      summary: List privacy or account lifecycle requests submitted by the current account
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Privacy request list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacyRequestListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - Privacy
+      operationId: createPrivacyRequest
+      summary: Create a privacy or account lifecycle request
+      description: Submit requests such as access export, erasure, rectification, or account deletion.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrivacyRequestCreateRequest'
+      responses:
+        '201':
+          description: Privacy request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacyRequestEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/privacy-requests/{privacyRequestId}:
+    get:
+      tags:
+        - Privacy
+      operationId: getPrivacyRequest
+      summary: Get one privacy or account lifecycle request
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PrivacyRequestIdPath'
+      responses:
+        '200':
+          description: Privacy request detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacyRequestEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /privacy/cookie-preferences:
+    get:
+      tags:
+        - Privacy
+      operationId: getCookiePreferences
+      summary: Get current cookie preference state
+      description: Return the current cookie preference snapshot for the current browser or signed-in user context.
+      responses:
+        '200':
+          description: Cookie preference snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CookiePreferencesEnvelope'
+    put:
+      tags:
+        - Privacy
+      operationId: setCookiePreferences
+      summary: Set cookie preferences
+      description: Update cookie preference flags. Necessary cookies are always enabled and are not configurable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CookiePreferencesUpdateRequest'
+      responses:
+        '200':
+          description: Updated cookie preference snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CookiePreferencesEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+  /admin/roles:
+    get:
+      tags:
+        - AdminSecurity
+      operationId: listRoles
+      summary: List roles and permissions exposed by the core user system
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Role definitions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleDefinitionListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/overview:
+    get:
+      tags:
+        - AdminSettings
+      operationId: getAdminOverview
+      summary: Load admin overview counts for the core user system
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Core admin overview data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOverviewEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/audit-logs:
+    get:
+      tags:
+        - AdminSecurity
+      operationId: listAuditLogs
+      summary: List audit log entries
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/SearchQuery'
+      responses:
+        '200':
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/security/events:
+    get:
+      tags:
+        - AdminSecurity
+      operationId: listSecurityEvents
+      summary: List security events across accounts
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/SearchQuery'
+      responses:
+        '200':
+          description: Security event list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSecurityEventListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/users:
+    get:
+      tags:
+        - AdminUsers
+      operationId: listAdminUsers
+      summary: List users for admin review and operations
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/RoleCodeQuery'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Admin user list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserSummaryListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags:
+        - AdminUsers
+      operationId: createAdminManagedUser
+      summary: Create a user or admin account from the admin console
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserCreateRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserSummaryEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/users/{accountId}:
+    get:
+      tags:
+        - AdminUsers
+      operationId: getAdminManagedUser
+      summary: Get one user account for admin review
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+      responses:
+        '200':
+          description: User summary for admin review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+        - AdminUsers
+      operationId: updateAdminManagedUser
+      summary: Update one user account from the admin workspace
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserUpdateRequest'
+      responses:
+        '200':
+          description: Updated user summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserSummaryEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/users/{accountId}/sessions:
+    get:
+      tags:
+        - AdminSecurity
+      operationId: listAdminUserSessions
+      summary: List active sessions for one user
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Session list for the selected user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/users/{accountId}/sessions/revoke-all:
+    post:
+      tags:
+        - AdminSecurity
+      operationId: revokeAdminUserSessions
+      summary: Revoke all sessions for one user
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionBulkRevokeRequest'
+      responses:
+        '200':
+          description: User sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/users/{accountId}/security-events:
+    get:
+      tags:
+        - AdminSecurity
+      operationId: listAdminUserSecurityEvents
+      summary: List security events for one user
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Security events for the selected user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSecurityEventListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/users/{accountId}/audit-logs:
+    get:
+      tags:
+        - AdminSecurity
+      operationId: listAdminUserAuditLogs
+      summary: List audit log entries for one user
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Audit log entries for the selected user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/users/{accountId}/emails/{emailId}/verify:
+    post:
+      tags:
+        - AdminSecurity
+      operationId: adminVerifyUserEmail
+      summary: Mark one user email as verified
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+        - $ref: '#/components/parameters/EmailIdPath'
+      responses:
+        '200':
+          description: Updated verified email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailAddressEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/users/{accountId}/emails/{emailId}/unverify:
+    post:
+      tags:
+        - AdminSecurity
+      operationId: adminUnverifyUserEmail
+      summary: Mark one user email as unverified
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+        - $ref: '#/components/parameters/EmailIdPath'
+      responses:
+        '200':
+          description: Updated unverified email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailAddressEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/users/bulk-actions:
+    post:
+      tags:
+        - AdminUsers
+      operationId: bulkAdminUserAction
+      summary: Apply a bulk user action
+      description: Apply a bulk action such as freeze, suspend, activate, restore, delete, or set-status to multiple accounts.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserBulkActionRequest'
+      responses:
+        '200':
+          description: Bulk action accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/settings:
+    get:
+      tags:
+        - AdminSettings
+      operationId: listSystemSettings
+      summary: List persisted system settings
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: System setting list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSystemSettingListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/settings/{settingKey}:
+    patch:
+      tags:
+        - AdminSettings
+      operationId: updateSystemSetting
+      summary: Update one persisted system setting
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SettingKeyPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSystemSettingUpdateRequest'
+      responses:
+        '200':
+          description: Updated system setting
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSystemSettingEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    refreshTokenCookie:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+  parameters:
+    SearchQuery:
+      name: query
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+      example: alex@example.com
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+      example: cur_eyJvZmZzZXQiOjIwfQ
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      example: 20
+    StatusQuery:
+      name: status
+      in: query
+      required: false
+      schema:
+        type: string
+        enum:
+          - pending
+          - active
+          - email_unverified
+          - password_reset_required
+          - suspended
+          - frozen
+          - deleted
+      example: active
+    RoleCodeQuery:
+      name: role
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 80
+      example: admin
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 200
+      example: idem_20260402_001
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      schema:
+        type: string
+      example: W/"rev-3"
+    FileIdPath:
+      name: fileId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    EmailIdPath:
+      name: emailId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    PhoneIdPath:
+      name: phoneId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    PasskeyIdPath:
+      name: passkeyId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    SessionIdPath:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    PrivacyRequestIdPath:
+      name: privacyRequestId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    AccountIdPath:
+      name: accountId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Identifier'
+    SettingKeyPath:
+      name: settingKey
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+      example: auth.password.min_length
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            default:
+              value:
+                error:
+                  code: VALIDATION_ERROR
+                  message: One or more fields are invalid.
+                  details:
+                    field: email
+                  requestId: req_01HZZZZZZZZZZ
+    Unauthorized:
+      description: Authentication is required or invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            default:
+              value:
+                error:
+                  code: UNAUTHORIZED
+                  message: Authentication is required.
+                  requestId: req_01HZZZZZZZZZZ
+    Forbidden:
+      description: The caller lacks permission for this action
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            default:
+              value:
+                error:
+                  code: FORBIDDEN
+                  message: You do not have permission to perform this action.
+                  requestId: req_01HZZZZZZZZZZ
+    NotFound:
+      description: The requested resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            default:
+              value:
+                error:
+                  code: NOT_FOUND
+                  message: Resource not found.
+                  requestId: req_01HZZZZZZZZZZ
+    Conflict:
+      description: The request conflicts with existing state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            default:
+              value:
+                error:
+                  code: CONFLICT
+                  message: The requested change conflicts with existing state.
+                  requestId: req_01HZZZZZZZZZZ
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            default:
+              value:
+                error:
+                  code: RATE_LIMITED
+                  message: Too many requests. Try again later.
+                  requestId: req_01HZZZZZZZZZZ
+    PreconditionFailed:
+      description: The resource changed and the precondition no longer matches
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          examples:
+            default:
+              value:
+                error:
+                  code: PRECONDITION_FAILED
+                  message: The resource has been modified. Refresh and retry.
+                  requestId: req_01HZZZZZZZZZZ
+  schemas:
+    Identifier:
+      type: string
+      format: uuid
+      example: 11111111-1111-4111-8111-111111111111
+    CurrencyCode:
+      type: string
+      pattern: ^[A-Z]{3}$
+      example: GBP
+    ResponseMeta:
+      type: object
+      additionalProperties: false
+      required:
+        - requestId
+      properties:
+        requestId:
+          type: string
+          example: req_01HZZZZZZZZZZ
+        nextCursor:
+          type:
+            - string
+            - 'null'
+          example: null
+    ErrorObject:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+        - requestId
+      properties:
+        code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: One or more fields are invalid.
+        details:
+          type:
+            - object
+            - 'null'
+          additionalProperties: true
+        requestId:
+          type: string
+          example: req_01HZZZZZZZZZZ
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorObject'
+    Acknowledgement:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          example: ok
+        message:
+          type:
+            - string
+            - 'null'
+          example: Operation completed successfully.
+    AcknowledgementEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/Acknowledgement'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    LegalDocumentAcceptance:
+      type: object
+      additionalProperties: false
+      required:
+        - documentKey
+        - version
+      properties:
+        documentKey:
+          type: string
+          enum:
+            - terms_of_service
+            - privacy_policy
+            - cookie_policy
+          example: privacy_policy
+        version:
+          type: string
+          example: '2026-04-01'
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+        - displayName
+        - acceptedLegalDocuments
+      properties:
+        email:
+          type: string
+          format: email
+          example: alex@example.com
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+          example: StrongPassword!234
+        displayName:
+          type: string
+          minLength: 2
+          maxLength: 80
+          example: Alex
+        primaryPhone:
+          type:
+            - string
+            - 'null'
+          pattern: ^\+[1-9]\d{6,14}$
+          example: '+447700900123'
+        acceptedLegalDocuments:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/LegalDocumentAcceptance'
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: alex@example.com
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: StrongPassword!234
+        rememberMe:
+          type: boolean
+          example: true
+    UserSecuritySummary:
+      type: object
+      additionalProperties: false
+      required:
+        - passwordSet
+        - mustRotatePassword
+        - emailVerified
+        - primaryEmailVerified
+        - primaryPhoneVerified
+        - mfaEnabled
+        - mfaRequired
+        - totpEnabled
+        - recoveryCodesAvailable
+        - passkeyCount
+        - enrolledFactors
+      properties:
+        passwordSet:
+          type: boolean
+          example: true
+        mustRotatePassword:
+          type: boolean
+          example: false
+        emailVerified:
+          type: boolean
+          example: true
+        primaryEmailVerified:
+          type: boolean
+          example: true
+        primaryPhoneVerified:
+          type: boolean
+          example: true
+        mfaEnabled:
+          type: boolean
+          example: true
+        mfaRequired:
+          type: boolean
+          example: false
+        totpEnabled:
+          type: boolean
+          example: true
+        recoveryCodesAvailable:
+          type: boolean
+          example: true
+        passkeyCount:
+          type: integer
+          minimum: 0
+          example: 2
+        enrolledFactors:
+          type: array
+          items:
+            type: string
+            enum:
+              - password
+              - totp
+              - passkey
+              - recovery_code
+          example:
+            - password
+            - totp
+            - passkey
+    UserSecuritySummaryEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/UserSecuritySummary'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    UserProfile:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - status
+        - primaryEmail
+        - displayName
+        - roles
+        - scopes
+        - defaultCurrency
+        - locale
+        - timezoneName
+        - createdAt
+        - security
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        status:
+          type: string
+          enum:
+            - pending
+            - active
+            - email_unverified
+            - password_reset_required
+            - suspended
+            - frozen
+            - deleted
+          example: active
+        primaryEmail:
+          type: string
+          format: email
+          example: alex@example.com
+        primaryPhone:
+          type:
+            - string
+            - 'null'
+          pattern: ^\+[1-9]\d{6,14}$
+          example: '+447700900123'
+        displayName:
+          type: string
+          example: Alex Pricewatch
+        roles:
+          type: array
+          items:
+            type: string
+            enum:
+              - user
+              - admin
+          example:
+            - user
+        scopes:
+          type: array
+          items:
+            type: string
+          example:
+            - profile:read
+            - profile:write
+            - security:read
+            - security:write
+        defaultCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        locale:
+          type: string
+          example: en-GB
+        timezoneName:
+          type: string
+          example: Europe/London
+        profileBio:
+          type:
+            - string
+            - 'null'
+          example: Security-conscious user and contributor.
+        avatarFileId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          example: null
+        avatarFilename:
+          type:
+            - string
+            - 'null'
+          example: avatar.png
+        emailCount:
+          type: integer
+          minimum: 1
+          example: 2
+        phoneCount:
+          type: integer
+          minimum: 0
+          example: 1
+        security:
+          $ref: '#/components/schemas/UserSecuritySummary'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:00:00Z'
+    UserProfileEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/UserProfile'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AuthSession:
+      type: object
+      additionalProperties: false
+      required:
+        - accessToken
+        - tokenType
+        - expiresInSeconds
+        - user
+      properties:
+        accessToken:
+          type: string
+          example: eyJhbGciOi...
+        tokenType:
+          type: string
+          enum:
+            - Bearer
+          example: Bearer
+        expiresInSeconds:
+          type: integer
+          minimum: 1
+          example: 900
+        user:
+          $ref: '#/components/schemas/UserProfile'
+    AuthSessionEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/AuthSession'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    ProfileUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        displayName:
+          type: string
+          minLength: 2
+          maxLength: 80
+          example: Alex Pricewatch
+        defaultCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        locale:
+          type: string
+          example: en-GB
+        timezoneName:
+          type: string
+          example: Europe/London
+        profileBio:
+          type:
+            - string
+            - 'null'
+          example: Track my account and security settings carefully.
+    AvatarUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - fileId
+      properties:
+        fileId:
+          $ref: '#/components/schemas/Identifier'
+    PasswordChangeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - currentPassword
+        - newPassword
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: OldPassword!234
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 128
+          example: NewPassword!234
+    PasswordForgotRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+          example: alex@example.com
+    PasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - resetToken
+        - newPassword
+      properties:
+        resetToken:
+          type: string
+          minLength: 20
+          maxLength: 512
+          example: reset_tok_abc123
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 128
+          example: FreshPassword!234
+    MfaChallenge:
+      type: object
+      additionalProperties: false
+      required:
+        - challengeId
+        - availableFactors
+        - expiresAt
+      properties:
+        challengeId:
+          $ref: '#/components/schemas/Identifier'
+        availableFactors:
+          type: array
+          items:
+            type: string
+            enum:
+              - totp
+              - recovery_code
+              - passkey
+          example:
+            - totp
+            - recovery_code
+        expiresAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:20:00Z'
+    MfaChallengeEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/MfaChallenge'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    MfaVerifyRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - challengeId
+        - factorType
+      properties:
+        challengeId:
+          $ref: '#/components/schemas/Identifier'
+        factorType:
+          type: string
+          enum:
+            - totp
+            - recovery_code
+          example: totp
+        code:
+          type:
+            - string
+            - 'null'
+          minLength: 6
+          maxLength: 64
+          example: '483920'
+    Passkey:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - displayName
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        displayName:
+          type: string
+          example: Alex MacBook Touch ID
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:00:00Z'
+        lastUsedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: '2026-04-03T08:20:00Z'
+    PasskeyEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/Passkey'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PasskeyListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Passkey'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PasskeyRegistrationOptionsRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: Alex iPhone Face ID
+    WebAuthnPublicKeyOptions:
+      type: object
+      description: Opaque WebAuthn ceremony payload passed to browser APIs and returned for verification.
+      additionalProperties: true
+      example:
+        challenge: ZXhhbXBsZS1jaGFsbGVuZ2U
+        rp:
+          name: Core User Management
+        user:
+          id: dXNlcl8x
+          name: alex@example.com
+          displayName: Alex
+        pubKeyCredParams:
+          - alg: -7
+            type: public-key
+    PasskeyRegistrationOptions:
+      type: object
+      additionalProperties: false
+      required:
+        - registrationId
+        - publicKey
+      properties:
+        registrationId:
+          $ref: '#/components/schemas/Identifier'
+        publicKey:
+          $ref: '#/components/schemas/WebAuthnPublicKeyOptions'
+    PasskeyRegistrationOptionsEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/PasskeyRegistrationOptions'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PasskeyRegistrationVerifyRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - registrationId
+        - credential
+      properties:
+        registrationId:
+          $ref: '#/components/schemas/Identifier'
+        credential:
+          type: object
+          additionalProperties: true
+          example:
+            id: credential-id
+            rawId: credential-id
+            response:
+              clientDataJSON: '...'
+              attestationObject: '...'
+            type: public-key
+    PasskeyAuthenticationOptionsRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        email:
+          type:
+            - string
+            - 'null'
+          format: email
+          example: alex@example.com
+    PasskeyAuthenticationOptions:
+      type: object
+      additionalProperties: false
+      required:
+        - authenticationId
+        - publicKey
+      properties:
+        authenticationId:
+          $ref: '#/components/schemas/Identifier'
+        publicKey:
+          $ref: '#/components/schemas/WebAuthnPublicKeyOptions'
+    PasskeyAuthenticationOptionsEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/PasskeyAuthenticationOptions'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PasskeyAuthenticationVerifyRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - authenticationId
+        - credential
+      properties:
+        authenticationId:
+          $ref: '#/components/schemas/Identifier'
+        credential:
+          type: object
+          additionalProperties: true
+          example:
+            id: credential-id
+            rawId: credential-id
+            response:
+              clientDataJSON: '...'
+              authenticatorData: '...'
+              signature: '...'
+              userHandle: '...'
+            type: public-key
+    TotpSetup:
+      type: object
+      additionalProperties: false
+      required:
+        - secret
+        - otpauthUri
+        - qrCodeSvgDataUrl
+      properties:
+        secret:
+          type: string
+          example: JBSWY3DPEHPK3PXP
+        otpauthUri:
+          type: string
+          example: otpauth://totp/CoreUserManagement:alex@example.com?secret=JBSWY3DPEHPK3PXP&issuer=CoreUserManagement
+        qrCodeSvgDataUrl:
+          type: string
+          example: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0c...
+    TotpSetupEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/TotpSetup'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    TotpEnableRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          minLength: 6
+          maxLength: 8
+          example: '483920'
+    RecoveryCodeList:
+      type: object
+      additionalProperties: false
+      required:
+        - codes
+      properties:
+        codes:
+          type: array
+          minItems: 8
+          maxItems: 12
+          items:
+            type: string
+            example: A1C3-E5G7
+    RecoveryCodeListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/RecoveryCodeList'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    VerificationCodeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          minLength: 4
+          maxLength: 16
+          example: '483920'
+    EmailAddress:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - email
+        - label
+        - isPrimary
+        - isLoginEnabled
+        - isVerified
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        email:
+          type: string
+          format: email
+          example: alex@example.com
+        label:
+          type: string
+          enum:
+            - primary
+            - backup
+            - billing
+            - other
+          example: primary
+        isPrimary:
+          type: boolean
+          example: true
+        isLoginEnabled:
+          type: boolean
+          example: true
+        isVerified:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:00:00Z'
+    EmailAddressEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/EmailAddress'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    EmailAddressListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmailAddress'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    EmailAddressCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - label
+      properties:
+        email:
+          type: string
+          format: email
+          example: alex.backup@example.com
+        label:
+          type: string
+          enum:
+            - backup
+            - billing
+            - other
+          example: backup
+    PhoneNumber:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - phoneNumber
+        - label
+        - isPrimary
+        - isSmsEnabled
+        - isVerified
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        phoneNumber:
+          type: string
+          pattern: ^\+[1-9]\d{6,14}$
+          example: '+447700900123'
+        label:
+          type: string
+          enum:
+            - primary
+            - backup
+            - sms_alerts
+            - other
+          example: primary
+        isPrimary:
+          type: boolean
+          example: true
+        isSmsEnabled:
+          type: boolean
+          example: false
+        isVerified:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:00:00Z'
+    PhoneNumberEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/PhoneNumber'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PhoneNumberListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PhoneNumber'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PhoneNumberCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - phoneNumber
+        - label
+      properties:
+        phoneNumber:
+          type: string
+          pattern: ^\+[1-9]\d{6,14}$
+          example: '+447700900123'
+        label:
+          type: string
+          enum:
+            - backup
+            - sms_alerts
+            - other
+          example: sms_alerts
+    LegalDocument:
+      type: object
+      additionalProperties: false
+      required:
+        - documentKey
+        - title
+        - version
+        - effectiveAt
+        - url
+      properties:
+        documentKey:
+          type: string
+          enum:
+            - terms_of_service
+            - privacy_policy
+            - cookie_policy
+          example: privacy_policy
+        title:
+          type: string
+          example: Privacy Policy
+        version:
+          type: string
+          example: '2026-04-01'
+        effectiveAt:
+          type: string
+          format: date-time
+          example: '2026-04-01T00:00:00Z'
+        url:
+          type: string
+          format: uri
+          example: https://example.com/legal/privacy-policy-2026-04-01
+    LegalDocumentListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegalDocument'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PrivacyConsent:
+      type: object
+      additionalProperties: false
+      required:
+        - documentKey
+        - version
+        - acceptedAt
+      properties:
+        documentKey:
+          type: string
+          enum:
+            - terms_of_service
+            - privacy_policy
+            - cookie_policy
+          example: privacy_policy
+        version:
+          type: string
+          example: '2026-04-01'
+        acceptedAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:00:00Z'
+        source:
+          type:
+            - string
+            - 'null'
+          enum:
+            - registration
+            - settings_update
+            - admin_import
+            - null
+          example: registration
+    PrivacyConsentCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - documents
+      properties:
+        documents:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/LegalDocumentAcceptance'
+    PrivacyConsentListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrivacyConsent'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    CookiePreferences:
+      type: object
+      additionalProperties: false
+      required:
+        - necessary
+        - preferences
+        - analytics
+        - marketing
+        - updatedAt
+      properties:
+        necessary:
+          type: boolean
+          const: true
+          example: true
+        preferences:
+          type: boolean
+          example: true
+        analytics:
+          type: boolean
+          example: false
+        marketing:
+          type: boolean
+          example: false
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:10:00Z'
+    CookiePreferencesUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - preferences
+        - analytics
+        - marketing
+      properties:
+        preferences:
+          type: boolean
+          example: true
+        analytics:
+          type: boolean
+          example: false
+        marketing:
+          type: boolean
+          example: false
+    CookiePreferencesEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/CookiePreferences'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    FilePurpose:
+      type: string
+      enum:
+        - user_avatar
+        - privacy_export_package
+        - other_private
+      example: user_avatar
+    FileUploadIntentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - filename
+        - contentType
+        - size
+        - purpose
+      properties:
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: avatar.png
+        contentType:
+          type: string
+          example: image/png
+        size:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+          example: 231231
+        purpose:
+          $ref: '#/components/schemas/FilePurpose'
+        checksumSha256:
+          type:
+            - string
+            - 'null'
+          pattern: ^[A-Fa-f0-9]{64}$
+          example: 3f786850e387550fdab836ed7e6dc881de23001b
+    FileUploadIntent:
+      type: object
+      additionalProperties: false
+      required:
+        - fileId
+        - uploadUrl
+        - expiresAt
+      properties:
+        fileId:
+          $ref: '#/components/schemas/Identifier'
+        uploadUrl:
+          type: string
+          format: uri
+          example: https://object-store.example.com/upload/signed-token
+        expiresAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T17:30:00Z'
+        requiredHeaders:
+          type:
+            - object
+            - 'null'
+          additionalProperties:
+            type: string
+          example:
+            x-amz-acl: private
+    FileUploadIntentEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/FileUploadIntent'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    FileRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - filename
+        - contentType
+        - size
+        - purpose
+        - status
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        filename:
+          type: string
+          example: avatar.png
+        contentType:
+          type: string
+          example: image/png
+        size:
+          type: integer
+          minimum: 1
+          example: 231231
+        purpose:
+          $ref: '#/components/schemas/FilePurpose'
+        status:
+          type: string
+          enum:
+            - upload_pending
+            - scan_pending
+            - ready
+            - rejected
+            - deleted
+          example: ready
+        metadataStripped:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:50:00Z'
+    FileRecordEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/FileRecord'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    FileDownload:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+        - expiresAt
+      properties:
+        url:
+          type: string
+          format: uri
+          example: https://object-store.example.com/download/signed-token
+        expiresAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T17:30:00Z'
+    FileDownloadEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/FileDownload'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AdminOverview:
+      type: object
+      additionalProperties: false
+      required:
+        - accountCount
+        - activeAccountCount
+        - suspendedAccountCount
+        - deletedAccountCount
+        - adminAccountCount
+        - roleCount
+        - activeSessionCount
+        - securityEventCount
+        - auditLogCount
+        - privacyRequestCount
+        - systemSettingCount
+        - publicAdminBootstrapEnabled
+      properties:
+        accountCount:
+          type: integer
+          minimum: 0
+          example: 1240
+        activeAccountCount:
+          type: integer
+          minimum: 0
+          example: 1198
+        suspendedAccountCount:
+          type: integer
+          minimum: 0
+          example: 12
+        deletedAccountCount:
+          type: integer
+          minimum: 0
+          example: 30
+        adminAccountCount:
+          type: integer
+          minimum: 0
+          example: 4
+        roleCount:
+          type: integer
+          minimum: 0
+          example: 3
+        activeSessionCount:
+          type: integer
+          minimum: 0
+          example: 412
+        securityEventCount:
+          type: integer
+          minimum: 0
+          example: 9280
+        auditLogCount:
+          type: integer
+          minimum: 0
+          example: 17411
+        privacyRequestCount:
+          type: integer
+          minimum: 0
+          example: 6
+        systemSettingCount:
+          type: integer
+          minimum: 0
+          example: 28
+        publicAdminBootstrapEnabled:
+          type: boolean
+          example: false
+    AdminOverviewEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminOverview'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AdminUserSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - status
+        - displayName
+        - primaryEmail
+        - roles
+        - scopes
+        - locale
+        - timezoneName
+        - defaultCurrency
+        - emailCount
+        - phoneCount
+        - createdAt
+        - security
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        status:
+          type: string
+          example: active
+        displayName:
+          type: string
+          example: Alex Pricewatch
+        primaryEmail:
+          type: string
+          format: email
+          example: alex@example.com
+        primaryPhone:
+          type:
+            - string
+            - 'null'
+          pattern: ^\+[1-9]\d{6,14}$
+          example: '+447700900123'
+        roles:
+          type: array
+          items:
+            type: string
+          example:
+            - user
+        scopes:
+          type: array
+          items:
+            type: string
+          example:
+            - profile:read
+            - profile:write
+        locale:
+          type: string
+          example: en-GB
+        timezoneName:
+          type: string
+          example: Europe/London
+        defaultCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        emailCount:
+          type: integer
+          minimum: 1
+          example: 2
+        phoneCount:
+          type: integer
+          minimum: 0
+          example: 1
+        avatarFileId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          example: null
+        avatarFilename:
+          type:
+            - string
+            - 'null'
+          example: avatar.png
+        profileBio:
+          type:
+            - string
+            - 'null'
+          example: Security-conscious user and contributor.
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-02T16:00:00Z'
+        lastActiveAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: '2026-04-23T08:20:00Z'
+        deletedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: null
+        suspendedUntil:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: null
+        security:
+          $ref: '#/components/schemas/UserSecuritySummary'
+    AdminUserSummaryEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminUserSummary'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AdminUserSummaryListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUserSummary'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AdminUserCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+        - displayName
+      properties:
+        email:
+          type: string
+          format: email
+          example: sam@example.com
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+          example: StrongPassword!234
+        displayName:
+          type: string
+          minLength: 2
+          maxLength: 80
+          example: Sam Admin
+        primaryPhone:
+          type:
+            - string
+            - 'null'
+          pattern: ^\+[1-9]\d{6,14}$
+          example: '+447700900124'
+        roleCodes:
+          type: array
+          items:
+            type: string
+          example:
+            - user
+        accountStatus:
+          type: string
+          enum:
+            - pending
+            - active
+            - email_unverified
+            - password_reset_required
+            - suspended
+            - frozen
+          example: active
+    AdminUserUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        displayName:
+          type: string
+          minLength: 2
+          maxLength: 80
+          example: Sam Admin
+        primaryEmail:
+          type: string
+          format: email
+          example: sam@example.com
+        primaryPhone:
+          type:
+            - string
+            - 'null'
+          pattern: ^\+[1-9]\d{6,14}$
+          example: '+447700900124'
+        roleCodes:
+          type: array
+          items:
+            type: string
+          example:
+            - admin
+        accountStatus:
+          type: string
+          enum:
+            - pending
+            - active
+            - email_unverified
+            - password_reset_required
+            - suspended
+            - frozen
+            - deleted
+          example: suspended
+        requirePasswordChange:
+          type: boolean
+          example: true
+        requireMfaEnrollment:
+          type: boolean
+          example: true
+        disableLogin:
+          type: boolean
+          example: false
+        defaultCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        locale:
+          type: string
+          example: en-GB
+        timezoneName:
+          type: string
+          example: Europe/London
+        profileBio:
+          type:
+            - string
+            - 'null'
+          example: Updated by admin review.
+        reason:
+          type:
+            - string
+            - 'null'
+          maxLength: 400
+          example: Status changed after admin review.
+    AdminUserBulkActionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - accountIds
+        - action
+      properties:
+        accountIds:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Identifier'
+        action:
+          type: string
+          enum:
+            - freeze
+            - suspend
+            - activate
+            - restore
+            - delete
+            - set-status
+            - revoke_sessions
+            - require_password_change
+          example: freeze
+        status:
+          type:
+            - string
+            - 'null'
+          enum:
+            - pending
+            - active
+            - email_unverified
+            - password_reset_required
+            - suspended
+            - frozen
+            - deleted
+            - null
+          example: null
+        reason:
+          type:
+            - string
+            - 'null'
+          maxLength: 400
+          example: Suspicious activity under review.
+    AdminSystemSetting:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - key
+        - scope
+        - valueType
+        - isSensitive
+        - value
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        key:
+          type: string
+          example: auth.password.min_length
+        scope:
+          type: string
+          example: global
+        valueType:
+          type: string
+          enum:
+            - boolean
+            - integer
+            - string
+            - json
+          example: integer
+        description:
+          type:
+            - string
+            - 'null'
+          example: Minimum allowed password length.
+        isSensitive:
+          type: boolean
+          example: false
+        defaultValue:
+          description: Default value when no explicit override exists.
+        value:
+          description: Current persisted JSON value for the setting.
+        updatedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: '2026-04-22T12:00:00Z'
+        updatedByAccountId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          example: 99999999-9999-4999-8999-999999999999
+    AdminSystemSettingEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminSystemSetting'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AdminSystemSettingListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminSystemSetting'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AdminSystemSettingUpdateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - value
+      properties:
+        value:
+          description: New persisted JSON value for the setting.
+    AccountDeactivateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - currentPassword
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: StrongPassword!234
+        reason:
+          type:
+            - string
+            - 'null'
+          maxLength: 400
+          example: I no longer need this account.
+        revokeOtherSessions:
+          type: boolean
+          example: true
+    EmailVerificationConfirmRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - verificationToken
+      properties:
+        verificationToken:
+          type: string
+          minLength: 20
+          maxLength: 512
+          example: verify_tok_abc123
+    EmailVerificationResendRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+          example: alex@example.com
+        purpose:
+          type:
+            - string
+            - 'null'
+          enum:
+            - registration
+            - reverification
+            - null
+          example: registration
+    EmailChangeRequestCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - newEmail
+      properties:
+        newEmail:
+          type: string
+          format: email
+          example: alex.new@example.com
+    Session:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - isCurrent
+        - authenticatedAal
+        - createdAt
+        - lastSeenAt
+        - idleExpiresAt
+        - absoluteExpiresAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        isCurrent:
+          type: boolean
+          example: true
+        authenticatedAal:
+          type: integer
+          minimum: 1
+          maximum: 3
+          example: 2
+        deviceLabel:
+          type:
+            - string
+            - 'null'
+          example: Alex MacBook
+        userAgent:
+          type:
+            - string
+            - 'null'
+          example: Mozilla/5.0
+        ipAddress:
+          type:
+            - string
+            - 'null'
+          example: 203.0.113.10
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-20T18:10:00Z'
+        lastSeenAt:
+          type: string
+          format: date-time
+          example: '2026-04-23T07:55:00Z'
+        idleExpiresAt:
+          type: string
+          format: date-time
+          example: '2026-04-23T09:55:00Z'
+        absoluteExpiresAt:
+          type: string
+          format: date-time
+          example: '2026-05-20T18:10:00Z'
+    SessionListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    SessionBulkRevokeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        scope:
+          type: string
+          enum:
+            - others
+            - all
+          default: others
+          example: others
+        reason:
+          type:
+            - string
+            - 'null'
+          maxLength: 400
+          example: Session rotation after suspicious activity.
+    SecurityEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - eventType
+        - severity
+        - occurredAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        eventType:
+          type: string
+          enum:
+            - login_success
+            - login_failure
+            - password_changed
+            - password_reset_requested
+            - password_reset_completed
+            - mfa_enabled
+            - mfa_disabled
+            - session_revoked
+            - email_verified
+            - suspicious_login_reported
+          example: login_success
+        severity:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+          example: medium
+        summary:
+          type:
+            - string
+            - 'null'
+          example: New successful login from a previously unseen device.
+        ipAddress:
+          type:
+            - string
+            - 'null'
+          example: 203.0.113.10
+        userAgent:
+          type:
+            - string
+            - 'null'
+          example: Mozilla/5.0
+        deviceLabel:
+          type:
+            - string
+            - 'null'
+          example: Alex MacBook
+        occurredAt:
+          type: string
+          format: date-time
+          example: '2026-04-23T07:55:00Z'
+    SecurityEventListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityEvent'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AdminSecurityEvent:
+      allOf:
+        - $ref: '#/components/schemas/SecurityEvent'
+        - type: object
+          additionalProperties: false
+          required:
+            - accountId
+          properties:
+            accountId:
+              $ref: '#/components/schemas/Identifier'
+            accountEmail:
+              type:
+                - string
+                - 'null'
+              format: email
+              example: alex@example.com
+    AdminSecurityEventListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminSecurityEvent'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    SecurityReportCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - category
+        - description
+      properties:
+        category:
+          type: string
+          enum:
+            - suspicious_login
+            - unknown_device
+            - unexpected_password_reset
+            - other
+          example: suspicious_login
+        description:
+          type: string
+          minLength: 10
+          maxLength: 1000
+          example: I received a login alert for a location I have never used.
+        relatedEventId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          example: null
+    PrivacyRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - requestType
+        - status
+        - requestedAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        requestType:
+          type: string
+          enum:
+            - access_export
+            - erasure
+            - rectification
+            - account_delete
+          example: access_export
+        status:
+          type: string
+          enum:
+            - open
+            - in_review
+            - completed
+            - rejected
+            - cancelled
+          example: open
+        requestedAt:
+          type: string
+          format: date-time
+          example: '2026-04-23T08:00:00Z'
+        dueAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: '2026-05-23T08:00:00Z'
+        completedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: null
+        notes:
+          type:
+            - string
+            - 'null'
+          example: Please include login history and verified contact data.
+        exportFileId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          example: null
+    PrivacyRequestEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/PrivacyRequest'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PrivacyRequestListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrivacyRequest'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PrivacyRequestCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - requestType
+      properties:
+        requestType:
+          type: string
+          enum:
+            - access_export
+            - erasure
+            - rectification
+            - account_delete
+          example: account_delete
+        notes:
+          type:
+            - string
+            - 'null'
+          maxLength: 1000
+          example: Please delete my account after exporting my profile and session history.
+    RoleDefinition:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - name
+        - requiresMfa
+        - permissionCodes
+      properties:
+        code:
+          type: string
+          example: admin
+        name:
+          type: string
+          example: Administrator
+        description:
+          type:
+            - string
+            - 'null'
+          example: Full administrative control over the core user-management platform.
+        requiresMfa:
+          type: boolean
+          example: true
+        permissionCodes:
+          type: array
+          items:
+            type: string
+          example:
+            - admin:users:read
+            - admin:users:write
+            - admin:security:read
+            - admin:settings:write
+    RoleDefinitionListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleDefinition'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AuditLogEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - action
+        - entityType
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        action:
+          type: string
+          example: admin.user.status_changed
+        entityType:
+          type: string
+          example: account
+        entityId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          example: 11111111-1111-4111-8111-111111111111
+        actorAccountId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          example: 99999999-9999-4999-8999-999999999999
+        summary:
+          type:
+            - string
+            - 'null'
+          example: Administrator suspended the account pending review.
+        requestId:
+          type:
+            - string
+            - 'null'
+          example: req_01HZZZZZZZZZZ
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-23T08:05:00Z'
+    AuditLogListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'

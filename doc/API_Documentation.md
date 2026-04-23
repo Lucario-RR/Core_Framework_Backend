@@ -2,6 +2,17 @@
 
 The canonical API contract is [API_Documentation.openapi.yaml](API_Documentation.openapi.yaml).
 
+Implementation note:
+
+- the Rust backend in this repository also exposes signed local transport helpers under `/internal/uploads/*` and `/internal/files/*`
+- those internal routes make the documented file-intent flow runnable in local development without requiring an external object store
+- they are implementation details, not part of the stable public API contract
+
+Error note:
+
+- API error payloads include `error.urgencyLevel` on a 1-9 scale so clients and operators can distinguish low-friction request fixes from higher-urgency backend failures
+- see [Error_Handling_Guide.md](Error_Handling_Guide.md) for the urgency scale, local log path, and common recovery steps
+
 This companion note explains what changed:
 
 - the original promoted OpenAPI file had copied the full PriceTracker reference surface

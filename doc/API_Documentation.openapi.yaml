@@ -26,7 +26,7 @@ info:
     - default currency uses ISO 4217 alpha-3 codes
     - response bodies use `camelCase`
     - successful responses use `{ data, meta }`
-    - error responses use `{ error }`
+    - error responses use `{ error }` and include `urgencyLevel` on a 1-9 scale
     - request DTOs reject unknown fields unless explicitly stated otherwise
 servers:
   - url: https://api.example.com/api/v1
@@ -1847,6 +1847,7 @@ components:
                 error:
                   code: VALIDATION_ERROR
                   message: One or more fields are invalid.
+                  urgencyLevel: 3
                   details:
                     field: email
                   requestId: req_01HZZZZZZZZZZ
@@ -1862,6 +1863,7 @@ components:
                 error:
                   code: UNAUTHORIZED
                   message: Authentication is required.
+                  urgencyLevel: 4
                   requestId: req_01HZZZZZZZZZZ
     Forbidden:
       description: The caller lacks permission for this action
@@ -1875,6 +1877,7 @@ components:
                 error:
                   code: FORBIDDEN
                   message: You do not have permission to perform this action.
+                  urgencyLevel: 5
                   requestId: req_01HZZZZZZZZZZ
     NotFound:
       description: The requested resource does not exist
@@ -1888,6 +1891,7 @@ components:
                 error:
                   code: NOT_FOUND
                   message: Resource not found.
+                  urgencyLevel: 2
                   requestId: req_01HZZZZZZZZZZ
     Conflict:
       description: The request conflicts with existing state
@@ -1901,6 +1905,7 @@ components:
                 error:
                   code: CONFLICT
                   message: The requested change conflicts with existing state.
+                  urgencyLevel: 5
                   requestId: req_01HZZZZZZZZZZ
     RateLimited:
       description: Too many requests
@@ -1914,6 +1919,7 @@ components:
                 error:
                   code: RATE_LIMITED
                   message: Too many requests. Try again later.
+                  urgencyLevel: 6
                   requestId: req_01HZZZZZZZZZZ
     PreconditionFailed:
       description: The resource changed and the precondition no longer matches
@@ -1927,6 +1933,7 @@ components:
                 error:
                   code: PRECONDITION_FAILED
                   message: The resource has been modified. Refresh and retry.
+                  urgencyLevel: 4
                   requestId: req_01HZZZZZZZZZZ
   schemas:
     Identifier:
@@ -1957,6 +1964,7 @@ components:
       required:
         - code
         - message
+        - urgencyLevel
         - requestId
       properties:
         code:
@@ -1965,6 +1973,15 @@ components:
         message:
           type: string
           example: One or more fields are invalid.
+        urgencyLevel:
+          type: integer
+          minimum: 1
+          maximum: 9
+          description: |
+            Integer urgency for the error response.
+            Lower values are usually client-fixable request issues.
+            Higher values indicate stronger security controls or backend/operator attention.
+          example: 3
         details:
           type:
             - object

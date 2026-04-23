@@ -15,6 +15,12 @@ It is intentionally focused on the reusable platform layer:
 
 The examples below are PostgreSQL-friendly SQL, but the model is portable to other relational databases by swapping types such as `JSONB`, `INET`, and `BYTEA`.
 
+Implementation note:
+
+- the concrete Rust backend in this repository keeps the same schema split and table boundaries, but it makes a few API-driven additions and naming simplifications
+- examples include `privacy.legal_document` for the published legal-document endpoint, `auth.phone_verification_challenge` for phone verification, explicit passkey ceremony tables, and `ops.setting_definition.key` instead of a longer `setting_key` column name
+- where this guide and the checked-in migration differ, treat the migration as the executable source of truth and use this guide as the design rationale
+
 ## 1. Design goals
 
 The schema should be:
@@ -81,17 +87,21 @@ If the project prefers a single schema, keep the same table boundaries and just 
 - `iam.account`
 - `iam.account_profile`
 - `iam.account_email`
+- `iam.account_phone`
 - `iam.account_status_history`
 - `iam.account_restriction`
 - `auth.authenticator`
 - `auth.password_credential`
 - `auth.password_history`
 - `auth.email_verification_challenge`
+- `auth.phone_verification_challenge`
 - `auth.password_reset_challenge`
 - `auth.session`
 - `auth.totp_factor`
 - `auth.recovery_code_set`
 - `auth.recovery_code`
+- `auth.passkey_registration_challenge`
+- `auth.passkey_authentication_challenge`
 - `iam.role`
 - `iam.permission`
 - `iam.role_permission`
@@ -103,13 +113,18 @@ If the project prefers a single schema, keep the same table boundaries and just 
 - `ops.idempotency_key`
 - `ops.notification`
 - `ops.notification_delivery`
+- `privacy.legal_document`
+- `privacy.consent_record`
+- `privacy.privacy_notice_version`
+- `privacy.cookie_consent`
 - `privacy.retention_policy`
 - `privacy.data_subject_request`
 - `privacy.legal_hold`
+- `file.storage_object`
+- `file.file_asset`
 
 ### 4.2 Important tables
 
-- `iam.account_phone`
 - `auth.account_email_change_request`
 - `auth.login_challenge`
 - `auth.account_lockout`
@@ -117,7 +132,7 @@ If the project prefers a single schema, keep the same table boundaries and just 
 - `ops.email_domain_rule`
 - `ops.security_report`
 - `ops.notification_preference`
-- `privacy.consent_record`
+- `file.file_attachment`
 
 ### 4.3 Optional extension tables
 
@@ -132,13 +147,14 @@ If the project prefers a single schema, keep the same table boundaries and just 
 - `ops.admin_case`
 - `ops.admin_case_note`
 - `ops.admin_impersonation_session`
-- `privacy.privacy_notice_version`
 - `privacy.cookie_definition`
-- `privacy.cookie_consent`
-- `file.storage_object`
-- `file.file_asset`
-- `file.file_attachment`
 - `ops.outbox_event`
+
+Alignment note:
+
+- because the current API contract exposes phone verification, legal document discovery, cookie preferences, passkey ceremonies, and account-owned private file flows, the implementation-grade schema should promote the related tables out of the optional bucket
+- `auth.phone_verification_challenge`, `privacy.legal_document`, `privacy.consent_record`, `privacy.privacy_notice_version`, `privacy.cookie_consent`, `file.storage_object`, and `file.file_asset` are now part of the practical baseline
+- passkey ceremonies also benefit from explicit registration/authentication challenge rows when the backend wants durable replay protection and a runnable local implementation
 
 ## 5. Core table structure
 
@@ -1059,10 +1075,10 @@ This section maps the feature scope directly to the schema so the design covers 
 | Scope area | Functions covered | Main tables |
 |---|---|---|
 | Account lifecycle | register, activate, login, logout, refresh, deactivate, freeze, restore, soft delete, self-service deletion request, admin-created account, forced password reset, forced re-verification, anonymous draft, invite-only, staged approval | `iam.account`, `iam.account_status_history`, `iam.account_restriction`, `auth.password_credential`, `auth.session`, `auth.email_verification_challenge`, `privacy.data_subject_request`, `auth.registration_draft`, `auth.registration_invite`, `auth.registration_approval` |
-| Identity and contact | primary email, email verification, change email, normalized lookup, unique email rules, multiple emails, backup email, login-enabled flags, resend verification, dual-confirm email change, phone, locale, timezone, display name, avatar | `iam.account_email`, `auth.email_verification_challenge`, `auth.account_email_change_request`, `iam.account_phone`, `iam.account_profile`, `file.file_asset` |
+| Identity and contact | primary email, email verification, change email, normalized lookup, unique email rules, multiple emails, backup email, login-enabled flags, resend verification, dual-confirm email change, phone, locale, timezone, display name, avatar | `iam.account_email`, `auth.email_verification_challenge`, `auth.account_email_change_request`, `iam.account_phone`, `auth.phone_verification_challenge`, `iam.account_profile`, `file.file_asset` |
 | Password and credentials | password registration, change, forgot/reset, token flow, Argon2id, per-password salt, complexity rules, password history, breach flag, expiry/rotation policy, credential enrollment audit, passkeys, external identity providers, passwordless | `auth.authenticator`, `auth.password_credential`, `auth.password_history`, `auth.password_reset_challenge`, `auth.passkey_credential`, `auth.external_identity`, `ops.audit_log`, `ops.security_event`, `ops.system_setting` |
 | Authentication and session control | session creation, refresh, revoke, logout current device, logout all devices, hashed tokens, active session list, device label, user agent, IP, idle timeout, absolute lifetime, remember-me, concurrent session limit, trusted device, high-risk approval, step-up auth | `auth.session`, `auth.trusted_device`, `auth.login_challenge`, `ops.system_setting`, `ops.security_event` |
-| MFA / 2FA / recovery | TOTP, recovery codes, enable/disable 2FA, verify at login, revoke lost factor, force MFA for admins/all users/by role, backup method, suspicious recovery alert, passkey as MFA, SMS fallback | `auth.authenticator`, `auth.totp_factor`, `auth.recovery_code_set`, `auth.recovery_code`, `auth.passkey_credential`, `auth.sms_factor`, `ops.notification`, `ops.notification_delivery`, `ops.system_setting` |
+| MFA / 2FA / recovery | TOTP, recovery codes, enable/disable 2FA, verify at login, revoke lost factor, force MFA for admins/all users/by role, backup method, suspicious recovery alert, passkey as MFA, SMS fallback | `auth.authenticator`, `auth.totp_factor`, `auth.recovery_code_set`, `auth.recovery_code`, `auth.passkey_credential`, `auth.passkey_registration_challenge`, `auth.passkey_authentication_challenge`, `auth.sms_factor`, `ops.notification`, `ops.notification_delivery`, `ops.system_setting` |
 | User self-service security | view account status, change password, change primary email, recent login activity, revoke own sessions, recovery code regeneration, see MFA methods, security notifications, suspicious login report, export/privacy requests | `iam.account`, `auth.session`, `ops.security_event`, `auth.authenticator`, `auth.recovery_code_set`, `ops.notification`, `ops.security_report`, `privacy.data_subject_request` |
 | Account restriction model | pending, active, suspended, frozen, deleted, freeze temporarily, suspend with reason, restore, require password reset, revoke sessions, disable login | `iam.account`, `iam.account_status_history`, `iam.account_restriction`, `auth.password_credential`, `auth.session`, `ops.audit_log` |
 | Admin portal | admin login, roles/permissions, user search/filter, user detail, freeze/unfreeze, suspend/restore, soft delete/recover, force logout, reset credentials, verify email, bulk actions, assign roles, required reason, audit trail, security events, active sessions, impersonation, approval workflow, case notes | `iam.role`, `iam.permission`, `iam.role_permission`, `iam.account_role`, `iam.account`, `iam.account_restriction`, `auth.session`, `ops.audit_log`, `ops.security_event`, `ops.admin_impersonation_session`, `ops.admin_action_approval`, `ops.admin_case`, `ops.admin_case_note` |
@@ -1070,7 +1086,7 @@ This section maps the feature scope directly to the schema so the design covers 
 | Security monitoring and risk controls | failed login tracking, rate limiting, lockout, IP capture, request ID, suspicious event logging, admin action audit, device fingerprint, impossible travel, new-IP alert, credential stuffing detection, brute-force detection, reset abuse detection, adaptive challenge, risk scoring, TOR/proxy heuristics | `ops.security_event`, `auth.account_lockout`, `auth.login_challenge`, `auth.session`, `ops.audit_log`, `ops.notification`, `ops.outbox_event` |
 | Error handling and logging | stable codes, request correlation, safe logs, separate audit/security logs, severity levels, taxonomy, operator diagnostics, retry-safe idempotency | `ops.audit_log`, `ops.security_event`, `ops.idempotency_key` |
 | Notifications | verification mail, reset mail, login alert, password change notice, MFA change notice, new device alert, suspicious login alert, freeze/restore notice, admin action notice, in-app notifications, webhook/event-bus notifications | `ops.notification`, `ops.notification_delivery`, `ops.notification_preference`, `ops.outbox_event` |
-| Privacy, retention, governance | soft deletion, retention for deleted accounts and sessions, data minimization, consent records, legal hold, export request, erasure request, cookie consent, privacy notice versioning, full data-subject workflow | `iam.account`, `privacy.retention_policy`, `privacy.data_subject_request`, `privacy.legal_hold`, `privacy.consent_record`, `privacy.privacy_notice_version`, `privacy.cookie_definition`, `privacy.cookie_consent` |
+| Privacy, retention, governance | soft deletion, retention for deleted accounts and sessions, data minimization, consent records, legal hold, export request, erasure request, cookie consent, privacy notice versioning, full data-subject workflow, published legal documents | `iam.account`, `privacy.legal_document`, `privacy.retention_policy`, `privacy.data_subject_request`, `privacy.legal_hold`, `privacy.consent_record`, `privacy.privacy_notice_version`, `privacy.cookie_definition`, `privacy.cookie_consent` |
 
 ## 8. Key indexes and constraints
 

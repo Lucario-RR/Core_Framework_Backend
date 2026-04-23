@@ -6,8 +6,8 @@ It is intentionally focused on identity and access management, not business-doma
 
 The ideas here are aligned with the existing reference material in:
 
-- `doc/ref/Database_Guide.md`
-- `doc/ref/API_Guide.md`
+- `doc/Database_Guide.md`
+- `doc/API_Documentation.md`
 
 ## 1. Scope Principles
 

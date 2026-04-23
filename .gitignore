@@ -1,1 +1,6 @@
 doc/ref/
+target/
+.env
+storage/
+*.log
+logs/

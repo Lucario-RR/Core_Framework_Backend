@@ -1,12 +1,11 @@
-use chrono::Utc;
 use serde_json::json;
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
     api::contracts::{
-        Acknowledgement, AdminOverview, AdminSystemSetting, AdminSystemSettingUpdateRequest, AdminUserBulkActionRequest,
-        AdminUserCreateRequest, AdminUserSummary, AdminUserUpdateRequest, EmailAddress, RegisterRequest, RoleDefinition,
+        Acknowledgement, AdminOverview, AdminSystemSetting, AdminSystemSettingUpdateRequest,
+        AdminUserBulkActionRequest, AdminUserCreateRequest, AdminUserSummary,
+        AdminUserUpdateRequest, EmailAddress, RegisterRequest, RoleDefinition,
         SessionBulkRevokeRequest,
     },
     auth::AuthContext,
@@ -38,7 +37,10 @@ pub async fn list_security_events(
     search: Option<&str>,
     offset: i64,
     limit: i64,
-) -> AppResult<(Vec<crate::api::contracts::AdminSecurityEvent>, Option<String>)> {
+) -> AppResult<(
+    Vec<crate::api::contracts::AdminSecurityEvent>,
+    Option<String>,
+)> {
     shared::list_security_events_admin(&state.pool, search, None, offset, limit).await
 }
 
@@ -78,13 +80,17 @@ pub async fn list_admin_users(
     let mut summaries = Vec::new();
     for account_id in account_ids {
         let summary = shared::load_admin_user_summary(&state.pool, account_id).await?;
-        if status.map(|expected| expected == summary.status).unwrap_or(true) {
+        if status
+            .map(|expected| expected == summary.status)
+            .unwrap_or(true)
+        {
             summaries.push(summary);
         }
     }
 
     let total = summaries.len() as i64;
-    let next_cursor = (offset + limit < total).then(|| crate::utils::encode_offset_cursor(offset + limit));
+    let next_cursor =
+        (offset + limit < total).then(|| crate::utils::encode_offset_cursor(offset + limit));
     let items = summaries
         .into_iter()
         .skip(offset as usize)
@@ -108,7 +114,9 @@ pub async fn create_admin_user(
         primary_phone: request.primary_phone,
         accepted_legal_documents: Vec::new(),
     };
-    let role_codes = request.role_codes.unwrap_or_else(|| vec!["user".to_string()]);
+    let role_codes = request
+        .role_codes
+        .unwrap_or_else(|| vec!["user".to_string()]);
     let initial_status = match requested_status.as_deref() {
         Some("pending") => Some("pending".to_string()),
         _ => Some("active".to_string()),
@@ -127,7 +135,14 @@ pub async fn create_admin_user(
     if let Some(status) = requested_status.as_deref() {
         if status != "active" && status != "pending" {
             let mut tx = state.pool.begin().await?;
-            apply_account_status(&mut tx, created.account_id, actor.account_id, status, Some("Initial admin-created status".to_string())).await?;
+            apply_account_status(
+                &mut tx,
+                created.account_id,
+                actor.account_id,
+                status,
+                Some("Initial admin-created status".to_string()),
+            )
+            .await?;
             tx.commit().await?;
         }
     }
@@ -243,11 +258,25 @@ pub async fn update_admin_user(
     }
 
     if let Some(disable_login) = request.disable_login {
-        set_login_disabled(&mut tx, account_id, actor.account_id, disable_login, request.reason.clone()).await?;
+        set_login_disabled(
+            &mut tx,
+            account_id,
+            actor.account_id,
+            disable_login,
+            request.reason.clone(),
+        )
+        .await?;
     }
 
     if let Some(status) = request.account_status.as_ref() {
-        apply_account_status(&mut tx, account_id, actor.account_id, status, request.reason.clone()).await?;
+        apply_account_status(
+            &mut tx,
+            account_id,
+            actor.account_id,
+            status,
+            request.reason.clone(),
+        )
+        .await?;
     }
 
     sqlx::query(
@@ -347,7 +376,10 @@ pub async fn list_admin_user_security_events(
     account_id: Uuid,
     offset: i64,
     limit: i64,
-) -> AppResult<(Vec<crate::api::contracts::AdminSecurityEvent>, Option<String>)> {
+) -> AppResult<(
+    Vec<crate::api::contracts::AdminSecurityEvent>,
+    Option<String>,
+)> {
     shared::list_security_events_admin(&state.pool, None, Some(account_id), offset, limit).await
 }
 
@@ -360,7 +392,11 @@ pub async fn list_admin_user_audit_logs(
     shared::list_audit_logs(&state.pool, None, Some(account_id), offset, limit).await
 }
 
-pub async fn admin_verify_user_email(state: &AppState, account_id: Uuid, email_id: Uuid) -> AppResult<EmailAddress> {
+pub async fn admin_verify_user_email(
+    state: &AppState,
+    account_id: Uuid,
+    email_id: Uuid,
+) -> AppResult<EmailAddress> {
     let affected = sqlx::query(
         r#"
         update iam.account_email
@@ -385,7 +421,11 @@ pub async fn admin_verify_user_email(state: &AppState, account_id: Uuid, email_i
         .ok_or_else(|| AppError::not_found("email not found"))
 }
 
-pub async fn admin_unverify_user_email(state: &AppState, account_id: Uuid, email_id: Uuid) -> AppResult<EmailAddress> {
+pub async fn admin_unverify_user_email(
+    state: &AppState,
+    account_id: Uuid,
+    email_id: Uuid,
+) -> AppResult<EmailAddress> {
     let affected = sqlx::query(
         r#"
         update iam.account_email
@@ -419,16 +459,59 @@ pub async fn bulk_admin_user_action(
     for account_id in &request.account_ids {
         let mut tx = state.pool.begin().await?;
         match request.action.as_str() {
-            "freeze" => apply_account_status(&mut tx, *account_id, actor.account_id, "frozen", request.reason.clone()).await?,
-            "suspend" => apply_account_status(&mut tx, *account_id, actor.account_id, "suspended", request.reason.clone()).await?,
-            "activate" | "restore" => apply_account_status(&mut tx, *account_id, actor.account_id, "active", request.reason.clone()).await?,
-            "delete" => apply_account_status(&mut tx, *account_id, actor.account_id, "deleted", request.reason.clone()).await?,
+            "freeze" => {
+                apply_account_status(
+                    &mut tx,
+                    *account_id,
+                    actor.account_id,
+                    "frozen",
+                    request.reason.clone(),
+                )
+                .await?
+            }
+            "suspend" => {
+                apply_account_status(
+                    &mut tx,
+                    *account_id,
+                    actor.account_id,
+                    "suspended",
+                    request.reason.clone(),
+                )
+                .await?
+            }
+            "activate" | "restore" => {
+                apply_account_status(
+                    &mut tx,
+                    *account_id,
+                    actor.account_id,
+                    "active",
+                    request.reason.clone(),
+                )
+                .await?
+            }
+            "delete" => {
+                apply_account_status(
+                    &mut tx,
+                    *account_id,
+                    actor.account_id,
+                    "deleted",
+                    request.reason.clone(),
+                )
+                .await?
+            }
             "set-status" => {
                 let status = request
                     .status
                     .as_deref()
                     .ok_or_else(|| AppError::validation("status is required for set-status"))?;
-                apply_account_status(&mut tx, *account_id, actor.account_id, status, request.reason.clone()).await?;
+                apply_account_status(
+                    &mut tx,
+                    *account_id,
+                    actor.account_id,
+                    status,
+                    request.reason.clone(),
+                )
+                .await?;
             }
             "revoke_sessions" => {
                 sqlx::query(
@@ -756,7 +839,11 @@ pub(crate) async fn apply_account_status(
             .await?;
         }
         "suspended" | "frozen" => {
-            let restriction_type = if status == "suspended" { "suspend" } else { "freeze" };
+            let restriction_type = if status == "suspended" {
+                "suspend"
+            } else {
+                "freeze"
+            };
             sqlx::query("update iam.account set status_code = 'active', deleted_at = null, updated_at = now() where id = $1")
                 .bind(account_id)
                 .execute(&mut **tx)

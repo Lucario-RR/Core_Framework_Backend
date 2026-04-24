@@ -37,6 +37,80 @@ cargo run
 
 The server listens on `http://127.0.0.1:11451` by default and runs the SQL migrations automatically on startup.
 
+## Maintenance Tool
+
+The repository also includes a separate Cargo binary for local database maintenance. It uses the same `.env` file and the same `DATABASE_URL` as the main backend, but it is compiled only when the `maintenance` feature is enabled.
+
+Create an administrator account:
+
+```powershell
+$env:MAINTENANCE_ADMIN_PASSWORD = "replace-with-a-strong-password"
+cargo run --features maintenance --bin maintenance -- create-admin --email admin@example.com --display-name "Admin User"
+Remove-Item Env:\MAINTENANCE_ADMIN_PASSWORD
+```
+
+By default this command:
+
+- connects to the database from `DATABASE_URL`
+- runs the same SQL migrations as the main backend
+- creates an active account with the `user` and `admin` roles
+- verifies the primary email so the account is ready for admin use
+- enrols TOTP MFA and prints the authenticator secret, `otpauth://` URI, and one-time recovery codes
+
+You can also pass the password directly, although the environment variable avoids leaving it in shell history:
+
+```bash
+cargo run --features maintenance --bin maintenance -- create-admin --email admin@example.com --display-name "Admin User" --password "replace-with-a-strong-password"
+```
+
+Useful options:
+
+- `--no-migrations`: connect without running migrations first
+- `--leave-email-pending`: create the account without marking the primary email as verified
+- `--no-totp`: skip TOTP enrolment; use this only if admin MFA is disabled or you plan to enrol MFA another way
+- `--require-password-change`: force the account to rotate its password after login
+
+Inspect recent users:
+
+```bash
+cargo run --features maintenance --bin maintenance -- list-users --limit 20
+```
+
+Build separation:
+
+```bash
+# Main backend only
+cargo run
+cargo build --bin core_framework_backend
+
+# Maintenance tool only
+cargo run --features maintenance --bin maintenance -- help
+cargo build --features maintenance --bin maintenance
+```
+
+The `maintenance` binary is declared with `required-features = ["maintenance"]`, so normal `cargo run` and normal `cargo build` do not compile the maintenance tool.
+
+## Environment
+
+Copy `.env.example` to `.env` before running locally. The backend loads `.env` automatically on startup.
+
+| Variable | Description |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string used by `sqlx` and automatic migrations. |
+| `BIND_ADDR` | IP address and port for the axum HTTP server, for example `127.0.0.1:11451`. |
+| `APP_BASE_URL` | Public base URL used when generating external-facing links and signed URLs. |
+| `JWT_SECRET` | Secret used to sign JWT access tokens. Replace the example with a long random value. |
+| `COOKIE_SECURE` | Marks auth cookies as HTTPS-only when set to `true`; use `false` for plain local HTTP. |
+| `PUBLIC_ADMIN_BOOTSTRAP_ENABLED` | Enables first-admin bootstrap registration when the matching database setting also allows it. |
+| `UPLOAD_DIR` | Local directory used by the development file upload/download adapter. |
+| `ACCESS_TOKEN_TTL_SECONDS` | Lifetime of bearer access tokens in seconds. |
+| `REFRESH_TOKEN_TTL_SECONDS` | Lifetime of refresh token cookies and long-lived sessions in seconds. |
+| `PASSWORD_RESET_TTL_SECONDS` | Lifetime of password reset challenges in seconds. |
+| `EMAIL_VERIFICATION_TTL_SECONDS` | Lifetime of email verification challenges in seconds. |
+| `TOTP_ISSUER` | Label shown in authenticator apps for TOTP MFA setup. |
+| `LOG_DIR` | Directory for local debug logs; default example writes `logs/backend-debug.log`. |
+| `RUST_LOG` | Rust tracing filter controlling console and file log verbosity. |
+
 ## Notes
 
 - File uploads start at `/api/v1/files/uploads`, then use the returned signed local upload URL under `/internal/uploads/...`.

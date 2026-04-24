@@ -6,10 +6,11 @@ use uuid::Uuid;
 
 use crate::{
     api::contracts::{
-        Acknowledgement, AuthSession, EmailVerificationConfirmRequest, EmailVerificationResendRequest, LoginRequest,
-        MfaChallenge, MfaVerifyRequest, PasskeyAuthenticationOptions, PasskeyAuthenticationOptionsRequest,
-        PasskeyAuthenticationVerifyRequest, PasswordChangeRequest, PasswordForgotRequest, PasswordResetRequest,
-        RegisterRequest,
+        Acknowledgement, AuthSession, EmailVerificationConfirmRequest,
+        EmailVerificationResendRequest, LoginRequest, MfaChallenge, MfaVerifyRequest,
+        PasskeyAuthenticationOptions, PasskeyAuthenticationOptionsRequest,
+        PasskeyAuthenticationVerifyRequest, PasswordChangeRequest, PasswordForgotRequest,
+        PasswordResetRequest, RegisterRequest,
     },
     auth::{self, notification_payload, AuthContext},
     error::{AppError, AppResult},
@@ -36,7 +37,9 @@ pub async fn register(
     request: RegisterRequest,
 ) -> AppResult<AuthSession> {
     if !shared::get_global_setting_bool(&state.pool, "registration.enabled").await? {
-        return Err(AppError::forbidden("public registration is currently disabled"));
+        return Err(AppError::forbidden(
+            "public registration is currently disabled",
+        ));
     }
 
     if shared::get_global_setting_bool(&state.pool, "registration.invite_only").await? {
@@ -66,9 +69,12 @@ pub async fn register_admin_bootstrap(
     request: RegisterRequest,
 ) -> AppResult<AuthSession> {
     if !state.config.public_admin_bootstrap_enabled
-        || !shared::get_global_setting_bool(&state.pool, "registration.bootstrap_admin_enabled").await?
+        || !shared::get_global_setting_bool(&state.pool, "registration.bootstrap_admin_enabled")
+            .await?
     {
-        return Err(AppError::forbidden("bootstrap admin registration is disabled"));
+        return Err(AppError::forbidden(
+            "bootstrap admin registration is disabled",
+        ));
     }
 
     let existing_admins = sqlx::query_scalar::<_, i64>(
@@ -83,7 +89,9 @@ pub async fn register_admin_bootstrap(
     .await?;
 
     if existing_admins > 0 {
-        return Err(AppError::conflict("an administrator account already exists"));
+        return Err(AppError::conflict(
+            "an administrator account already exists",
+        ));
     }
 
     let created = create_local_account(
@@ -247,7 +255,8 @@ pub async fn refresh_session(
     let remember_me: bool = row.try_get("remember_me")?;
     let aal: i16 = row.try_get("authenticated_aal")?;
 
-    let idle_timeout = shared::get_global_setting_i64(&state.pool, "auth.session.idle_timeout_seconds").await?;
+    let idle_timeout =
+        shared::get_global_setting_i64(&state.pool, "auth.session.idle_timeout_seconds").await?;
     let new_refresh_token = auth::generate_token(48);
     let new_csrf_token = auth::generate_token(24);
 
@@ -267,7 +276,15 @@ pub async fn refresh_session(
     .await?;
 
     auth::set_auth_cookies(cookies, &state.config, &new_refresh_token, &new_csrf_token);
-    complete_session_issue(state, account_id, session_id, aal as i32, remember_me, context).await
+    complete_session_issue(
+        state,
+        account_id,
+        session_id,
+        aal as i32,
+        remember_me,
+        context,
+    )
+    .await
 }
 
 pub async fn logout(
@@ -334,7 +351,8 @@ pub async fn change_password(
     context: &RequestContext,
     request: PasswordChangeRequest,
 ) -> AppResult<Acknowledgement> {
-    let minimum_length = shared::get_global_setting_i64(&state.pool, "auth.password.min_length").await?;
+    let minimum_length =
+        shared::get_global_setting_i64(&state.pool, "auth.password.min_length").await?;
     if request.new_password.len() < minimum_length as usize {
         return Err(AppError::validation(format!(
             "newPassword must be at least {minimum_length} characters"
@@ -377,10 +395,13 @@ pub async fn change_password(
     }
 
     if auth::verify_password(&request.new_password, &current_hash)? {
-        return Err(AppError::conflict("new password must differ from the current password"));
+        return Err(AppError::conflict(
+            "new password must differ from the current password",
+        ));
     }
 
-    let history_limit = shared::get_global_setting_i64(&state.pool, "auth.password.history_count").await?;
+    let history_limit =
+        shared::get_global_setting_i64(&state.pool, "auth.password.history_count").await?;
     let history_rows = sqlx::query_scalar::<_, String>(
         r#"
         select password_hash
@@ -399,7 +420,9 @@ pub async fn change_password(
         .into_iter()
         .any(|hash| auth::verify_password(&request.new_password, &hash).unwrap_or(false))
     {
-        return Err(AppError::conflict("new password cannot reuse a recent password"));
+        return Err(AppError::conflict(
+            "new password cannot reuse a recent password",
+        ));
     }
 
     let new_password = auth::hash_password(&request.new_password)?;
@@ -520,7 +543,8 @@ pub async fn start_password_reset(
         let password_version: i32 = row.try_get("password_version")?;
         let reset_token = format!("reset_{}", auth::generate_token(36));
         let challenge_hash = auth::sha256_hex(&reset_token);
-        let ttl = shared::get_global_setting_i64(&state.pool, "auth.password.reset_ttl_seconds").await?;
+        let ttl =
+            shared::get_global_setting_i64(&state.pool, "auth.password.reset_ttl_seconds").await?;
 
         sqlx::query(
             r#"
@@ -585,7 +609,8 @@ pub async fn complete_password_reset(
     context: &RequestContext,
     request: PasswordResetRequest,
 ) -> AppResult<()> {
-    let minimum_length = shared::get_global_setting_i64(&state.pool, "auth.password.min_length").await?;
+    let minimum_length =
+        shared::get_global_setting_i64(&state.pool, "auth.password.min_length").await?;
     if request.new_password.len() < minimum_length as usize {
         return Err(AppError::validation(format!(
             "newPassword must be at least {minimum_length} characters"
@@ -900,7 +925,9 @@ pub async fn resend_primary_email_verification(
             &state.pool,
             account_id,
             account_email_id,
-            request.purpose.unwrap_or_else(|| "registration".to_string()),
+            request
+                .purpose
+                .unwrap_or_else(|| "registration".to_string()),
             context,
         )
         .await?;
@@ -941,7 +968,11 @@ pub async fn verify_mfa_challenge(
     match request.factor_type.as_str() {
         "totp" => verify_totp_factor(&state.pool, account_id, &code).await?,
         "recovery_code" => verify_recovery_code(&state.pool, account_id, &code).await?,
-        _ => return Err(AppError::validation("factorType must be totp or recovery_code")),
+        _ => {
+            return Err(AppError::validation(
+                "factorType must be totp or recovery_code",
+            ))
+        }
     }
 
     sqlx::query("update auth.login_challenge set completed_at = now() where id = $1")
@@ -1057,7 +1088,9 @@ pub async fn verify_passkey_authentication(
         .await?;
 
         if !exists {
-            return Err(AppError::unauthorized("passkey credential is not registered"));
+            return Err(AppError::unauthorized(
+                "passkey credential is not registered",
+            ));
         }
 
         account_id
@@ -1078,10 +1111,12 @@ pub async fn verify_passkey_authentication(
         .ok_or_else(|| AppError::unauthorized("passkey credential is not registered"))?
     };
 
-    sqlx::query("update auth.passkey_authentication_challenge set verified_at = now() where id = $1")
-        .bind(challenge_id)
-        .execute(&state.pool)
-        .await?;
+    sqlx::query(
+        "update auth.passkey_authentication_challenge set verified_at = now() where id = $1",
+    )
+    .bind(challenge_id)
+    .execute(&state.pool)
+    .await?;
 
     issue_session(state, cookies, context, account_id, false, 2).await
 }
@@ -1096,10 +1131,13 @@ pub async fn create_local_account(
     require_password_change: bool,
 ) -> AppResult<CreatedAccount> {
     if created_by_account_id.is_none() && request.accepted_legal_documents.is_empty() {
-        return Err(AppError::validation("acceptedLegalDocuments must contain at least one document"));
+        return Err(AppError::validation(
+            "acceptedLegalDocuments must contain at least one document",
+        ));
     }
 
-    let password_min_length = shared::get_global_setting_i64(pool, "auth.password.min_length").await?;
+    let password_min_length =
+        shared::get_global_setting_i64(pool, "auth.password.min_length").await?;
     if request.password.len() < password_min_length as usize {
         return Err(AppError::validation(format!(
             "password must be at least {password_min_length} characters"
@@ -1109,7 +1147,10 @@ pub async fn create_local_account(
     let account_id = Uuid::new_v4();
     let primary_email_id = Uuid::new_v4();
     let normalized_email = normalize_email(&request.email);
-    let normalized_phone = request.primary_phone.as_ref().map(|value| value.trim().to_string());
+    let normalized_phone = request
+        .primary_phone
+        .as_ref()
+        .map(|value| value.trim().to_string());
 
     let existing = sqlx::query_scalar::<_, bool>(
         r#"
@@ -1126,7 +1167,9 @@ pub async fn create_local_account(
     .await?;
 
     if existing {
-        return Err(AppError::conflict("an account already exists for that email address"));
+        return Err(AppError::conflict(
+            "an account already exists for that email address",
+        ));
     }
 
     enforce_email_domain_rules(pool, &normalized_email).await?;
@@ -1307,7 +1350,14 @@ pub async fn create_local_account(
 
     tx.commit().await?;
 
-    enqueue_email_verification(pool, account_id, primary_email_id, "registration".to_string(), context).await?;
+    enqueue_email_verification(
+        pool,
+        account_id,
+        primary_email_id,
+        "registration".to_string(),
+        context,
+    )
+    .await?;
     shared::record_audit_log(
         pool,
         created_by_account_id,
@@ -1351,9 +1401,13 @@ pub async fn issue_session(
     let refresh_token = auth::generate_token(48);
     let csrf_token = auth::generate_token(24);
     let refresh_hash = auth::sha256_hex(&refresh_token);
-    let idle_timeout = shared::get_global_setting_i64(&state.pool, "auth.session.idle_timeout_seconds").await?;
-    let absolute_timeout = shared::get_global_setting_i64(&state.pool, "auth.session.absolute_timeout_seconds").await?;
-    let concurrent_limit = shared::get_global_setting_i64(&state.pool, "auth.session.concurrent_limit").await?;
+    let idle_timeout =
+        shared::get_global_setting_i64(&state.pool, "auth.session.idle_timeout_seconds").await?;
+    let absolute_timeout =
+        shared::get_global_setting_i64(&state.pool, "auth.session.absolute_timeout_seconds")
+            .await?;
+    let concurrent_limit =
+        shared::get_global_setting_i64(&state.pool, "auth.session.concurrent_limit").await?;
 
     revoke_excess_sessions(&state.pool, account_id, concurrent_limit.saturating_sub(1)).await?;
 
@@ -1384,7 +1438,15 @@ pub async fn issue_session(
     .await?;
 
     auth::set_auth_cookies(cookies, &state.config, &refresh_token, &csrf_token);
-    complete_session_issue(state, account_id, session_id, authenticated_aal, remember_me, context).await
+    complete_session_issue(
+        state,
+        account_id,
+        session_id,
+        authenticated_aal,
+        remember_me,
+        context,
+    )
+    .await
 }
 
 async fn complete_session_issue(
@@ -1411,16 +1473,21 @@ async fn complete_session_issue(
     let (access_token, expires_in_seconds) =
         auth::create_access_token(&state.config, account_id, session_id, roles, scopes)?;
     let user = shared::load_user_profile(&state.pool, account_id).await?;
+    let device_label = context.user_agent.as_deref().map(truncate_device_label);
 
     shared::record_security_event(
         &state.pool,
         Some(account_id),
         "login_success",
-        if authenticated_aal >= 2 { "low" } else { "medium" },
+        if authenticated_aal >= 2 {
+            "low"
+        } else {
+            "medium"
+        },
         Some("Authenticated session issued.".to_string()),
         context.ip_address.as_deref(),
         context.user_agent.as_deref(),
-        context.user_agent.as_deref().map(truncate_device_label),
+        device_label.as_deref(),
         json!({
             "sessionId": session_id,
             "rememberMe": remember_me,
@@ -1610,7 +1677,11 @@ async fn verify_recovery_code(pool: &PgPool, account_id: Uuid, code: &str) -> Ap
     Err(AppError::unauthorized("recovery code is invalid"))
 }
 
-async fn enforce_lockout(pool: &PgPool, subject_type: &str, subject_key_hash: &str) -> AppResult<()> {
+async fn enforce_lockout(
+    pool: &PgPool,
+    subject_type: &str,
+    subject_key_hash: &str,
+) -> AppResult<()> {
     let row = sqlx::query(
         r#"
         select locked_until
@@ -1626,17 +1697,28 @@ async fn enforce_lockout(pool: &PgPool, subject_type: &str, subject_key_hash: &s
 
     if let Some(row) = row {
         let locked_until: Option<chrono::DateTime<Utc>> = row.try_get("locked_until")?;
-        if locked_until.map(|value| value > Utc::now()).unwrap_or(false) {
-            return Err(AppError::rate_limited("too many failed attempts; try again later"));
+        if locked_until
+            .map(|value| value > Utc::now())
+            .unwrap_or(false)
+        {
+            return Err(AppError::rate_limited(
+                "too many failed attempts; try again later",
+            ));
         }
     }
 
     Ok(())
 }
 
-async fn register_login_failure(pool: &PgPool, subject_type: &str, subject_key_hash: &str) -> AppResult<()> {
-    let max_failures = shared::get_global_setting_i64(pool, "auth.rate_limit.login_max_failures").await?;
-    let lockout_seconds = shared::get_global_setting_i64(pool, "auth.rate_limit.login_lockout_seconds").await?;
+async fn register_login_failure(
+    pool: &PgPool,
+    subject_type: &str,
+    subject_key_hash: &str,
+) -> AppResult<()> {
+    let max_failures =
+        shared::get_global_setting_i64(pool, "auth.rate_limit.login_max_failures").await?;
+    let lockout_seconds =
+        shared::get_global_setting_i64(pool, "auth.rate_limit.login_lockout_seconds").await?;
 
     sqlx::query(
         r#"
@@ -1666,7 +1748,11 @@ async fn register_login_failure(pool: &PgPool, subject_type: &str, subject_key_h
     Ok(())
 }
 
-async fn clear_lockout_failures(pool: &PgPool, subject_type: &str, subject_key_hash: &str) -> AppResult<()> {
+async fn clear_lockout_failures(
+    pool: &PgPool,
+    subject_type: &str,
+    subject_key_hash: &str,
+) -> AppResult<()> {
     sqlx::query(
         r#"
         delete from auth.account_lockout
@@ -1714,30 +1800,53 @@ async fn enforce_email_domain_rules(pool: &PgPool, normalized_email: &str) -> Ap
         .nth(1)
         .ok_or_else(|| AppError::validation("email address is invalid"))?;
 
-    let allowed_domains = shared::get_global_setting_value(pool, "security.allowed_email_domains").await?;
-    let blocked_domains = shared::get_global_setting_value(pool, "security.blocked_email_domains").await?;
+    let allowed_domains =
+        shared::get_global_setting_value(pool, "security.allowed_email_domains").await?;
+    let blocked_domains =
+        shared::get_global_setting_value(pool, "security.blocked_email_domains").await?;
 
     let allowed = allowed_domains
         .as_array()
-        .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let blocked = blocked_domains
         .as_array()
-        .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
 
-    if !allowed.is_empty() && !allowed.iter().any(|candidate| candidate.eq_ignore_ascii_case(domain)) {
+    if !allowed.is_empty()
+        && !allowed
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(domain))
+    {
         return Err(AppError::forbidden("email domain is not allowed"));
     }
 
-    if blocked.iter().any(|candidate| candidate.eq_ignore_ascii_case(domain)) {
+    if blocked
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(domain))
+    {
         return Err(AppError::forbidden("email domain is blocked"));
     }
 
     Ok(())
 }
 
-async fn enforce_account_access(pool: &PgPool, account_id: Uuid, status_code: &str) -> AppResult<()> {
+async fn enforce_account_access(
+    pool: &PgPool,
+    account_id: Uuid,
+    status_code: &str,
+) -> AppResult<()> {
     if status_code == "deleted" {
         return Err(AppError::forbidden("account has been deleted"));
     }

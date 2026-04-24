@@ -2,15 +2,16 @@ use axum::{
     extract::{Extension, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 
 use crate::{
     api::contracts::{
-        AccountDeactivateRequest, AvatarUpdateRequest, EmailAddressCreateRequest, EmailChangeRequestCreateRequest,
-        PaginationQuery, PasskeyRegistrationOptionsRequest, PasskeyRegistrationVerifyRequest, PhoneNumberCreateRequest,
-        ProfileUpdateRequest, SecurityReportCreateRequest, SessionBulkRevokeRequest, TotpEnableRequest,
+        AccountDeactivateRequest, AvatarUpdateRequest, EmailAddressCreateRequest,
+        EmailChangeRequestCreateRequest, PaginationQuery, PasskeyRegistrationOptionsRequest,
+        PasskeyRegistrationVerifyRequest, PhoneNumberCreateRequest, ProfileUpdateRequest,
+        SecurityReportCreateRequest, SessionBulkRevokeRequest, TotpEnableRequest,
         VerificationCodeRequest,
     },
     auth,
@@ -48,16 +49,25 @@ pub fn routes() -> Router<AppState> {
         .route("/me/emails", get(list_emails).post(create_email))
         .route("/me/emails/{email_id}", delete(delete_email))
         .route("/me/emails/{email_id}/verify", post(verify_email))
-        .route("/me/emails/{email_id}/make-primary", post(make_email_primary))
+        .route(
+            "/me/emails/{email_id}/make-primary",
+            post(make_email_primary),
+        )
         .route(
             "/me/emails/{email_id}/resend-verification",
             post(resend_email_verification),
         )
-        .route("/me/email-change-requests", post(create_email_change_request))
+        .route(
+            "/me/email-change-requests",
+            post(create_email_change_request),
+        )
         .route("/me/phones", get(list_phones).post(create_phone))
         .route("/me/phones/{phone_id}", delete(delete_phone))
         .route("/me/phones/{phone_id}/verify", post(verify_phone))
-        .route("/me/phones/{phone_id}/make-primary", post(make_phone_primary))
+        .route(
+            "/me/phones/{phone_id}/make-primary",
+            post(make_phone_primary),
+        )
 }
 
 async fn get_me(
@@ -67,7 +77,10 @@ async fn get_me(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let (profile, etag) = user_service::get_me(&state, &auth_context).await?;
-    Ok(([(header::ETAG, etag)], Json(envelope(&context.request_id, profile))))
+    Ok((
+        [(header::ETAG, etag)],
+        Json(envelope(&context.request_id, profile)),
+    ))
 }
 
 async fn update_me(
@@ -77,9 +90,14 @@ async fn update_me(
     Json(request): Json<ProfileUpdateRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
-    let if_match = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok());
+    let if_match = headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok());
     let (profile, etag) = user_service::update_me(&state, &auth_context, if_match, request).await?;
-    Ok(([(header::ETAG, etag)], Json(envelope(&context.request_id, profile))))
+    Ok((
+        [(header::ETAG, etag)],
+        Json(envelope(&context.request_id, profile)),
+    ))
 }
 
 async fn set_avatar(
@@ -90,7 +108,10 @@ async fn set_avatar(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let (profile, etag) = user_service::set_avatar(&state, &auth_context, request).await?;
-    Ok(([(header::ETAG, etag)], Json(envelope(&context.request_id, profile))))
+    Ok((
+        [(header::ETAG, etag)],
+        Json(envelope(&context.request_id, profile)),
+    ))
 }
 
 async fn remove_avatar(
@@ -100,7 +121,10 @@ async fn remove_avatar(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let (profile, etag) = user_service::remove_avatar(&state, &auth_context).await?;
-    Ok(([(header::ETAG, etag)], Json(envelope(&context.request_id, profile))))
+    Ok((
+        [(header::ETAG, etag)],
+        Json(envelope(&context.request_id, profile)),
+    ))
 }
 
 async fn deactivate_own_account(
@@ -110,7 +134,8 @@ async fn deactivate_own_account(
     Json(request): Json<AccountDeactivateRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
-    let acknowledgement = user_service::deactivate_own_account(&state, &auth_context, &context, request).await?;
+    let acknowledgement =
+        user_service::deactivate_own_account(&state, &auth_context, &context, request).await?;
     Ok(Json(envelope(&context.request_id, acknowledgement)))
 }
 
@@ -122,8 +147,13 @@ async fn list_own_sessions(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let (offset, limit) = pagination(query)?;
-    let (sessions, next_cursor) = user_service::list_own_sessions(&state, &auth_context, offset, limit).await?;
-    Ok(Json(envelope_with_cursor(&context.request_id, sessions, next_cursor)))
+    let (sessions, next_cursor) =
+        user_service::list_own_sessions(&state, &auth_context, offset, limit).await?;
+    Ok(Json(envelope_with_cursor(
+        &context.request_id,
+        sessions,
+        next_cursor,
+    )))
 }
 
 async fn revoke_all_own_sessions(
@@ -134,7 +164,8 @@ async fn revoke_all_own_sessions(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let request = maybe_body.map(|Json(value)| value).unwrap_or_default();
-    let acknowledgement = user_service::revoke_all_own_sessions(&state, &auth_context, &context, request).await?;
+    let acknowledgement =
+        user_service::revoke_all_own_sessions(&state, &auth_context, &context, request).await?;
     Ok(Json(envelope(&context.request_id, acknowledgement)))
 }
 
@@ -167,8 +198,13 @@ async fn list_own_security_events(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let (offset, limit) = pagination(query)?;
-    let (events, next_cursor) = user_service::list_own_security_events(&state, &auth_context, offset, limit).await?;
-    Ok(Json(envelope_with_cursor(&context.request_id, events, next_cursor)))
+    let (events, next_cursor) =
+        user_service::list_own_security_events(&state, &auth_context, offset, limit).await?;
+    Ok(Json(envelope_with_cursor(
+        &context.request_id,
+        events,
+        next_cursor,
+    )))
 }
 
 async fn create_security_report(
@@ -178,8 +214,12 @@ async fn create_security_report(
     Json(request): Json<SecurityReportCreateRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
-    let acknowledgement = user_service::create_security_report(&state, &auth_context, &context, request).await?;
-    Ok((StatusCode::CREATED, Json(envelope(&context.request_id, acknowledgement))))
+    let acknowledgement =
+        user_service::create_security_report(&state, &auth_context, &context, request).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(envelope(&context.request_id, acknowledgement)),
+    ))
 }
 
 async fn list_passkeys(
@@ -202,7 +242,8 @@ async fn create_passkey_registration_options(
     let request = maybe_body
         .map(|Json(value)| value)
         .unwrap_or(PasskeyRegistrationOptionsRequest { display_name: None });
-    let options = user_service::create_passkey_registration_options(&state, &auth_context, request).await?;
+    let options =
+        user_service::create_passkey_registration_options(&state, &auth_context, request).await?;
     Ok(Json(envelope(&context.request_id, options)))
 }
 
@@ -214,7 +255,10 @@ async fn verify_passkey_registration(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let passkey = user_service::verify_passkey_registration(&state, &auth_context, request).await?;
-    Ok((StatusCode::CREATED, Json(envelope(&context.request_id, passkey))))
+    Ok((
+        StatusCode::CREATED,
+        Json(envelope(&context.request_id, passkey)),
+    ))
 }
 
 async fn delete_passkey(
@@ -287,7 +331,10 @@ async fn create_email(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let email = user_service::create_email(&state, &auth_context, &context, request).await?;
-    Ok((StatusCode::CREATED, Json(envelope(&context.request_id, email))))
+    Ok((
+        StatusCode::CREATED,
+        Json(envelope(&context.request_id, email)),
+    ))
 }
 
 async fn delete_email(
@@ -332,7 +379,10 @@ async fn resend_email_verification(
     let auth_context = auth::require_auth(&state, &headers).await?;
     let acknowledgement =
         user_service::resend_email_verification(&state, &auth_context, &context, email_id).await?;
-    Ok((StatusCode::ACCEPTED, Json(envelope(&context.request_id, acknowledgement))))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(envelope(&context.request_id, acknowledgement)),
+    ))
 }
 
 async fn create_email_change_request(
@@ -342,8 +392,12 @@ async fn create_email_change_request(
     Json(request): Json<EmailChangeRequestCreateRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
-    let acknowledgement = user_service::create_email_change_request(&state, &auth_context, &context, request).await?;
-    Ok((StatusCode::CREATED, Json(envelope(&context.request_id, acknowledgement))))
+    let acknowledgement =
+        user_service::create_email_change_request(&state, &auth_context, &context, request).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(envelope(&context.request_id, acknowledgement)),
+    ))
 }
 
 async fn list_phones(
@@ -364,7 +418,10 @@ async fn create_phone(
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let phone = user_service::create_phone(&state, &auth_context, &context, request).await?;
-    Ok((StatusCode::CREATED, Json(envelope(&context.request_id, phone))))
+    Ok((
+        StatusCode::CREATED,
+        Json(envelope(&context.request_id, phone)),
+    ))
 }
 
 async fn delete_phone(

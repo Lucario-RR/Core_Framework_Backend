@@ -4,3 +4,4 @@ target/
 storage/
 *.log
 logs/
+scripts/db/create_app_user.sql

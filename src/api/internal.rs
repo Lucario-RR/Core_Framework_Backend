@@ -27,10 +27,18 @@ async fn upload_file(
     headers: HeaderMap,
     body: Bytes,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let content_type = headers.get("content-type").and_then(|value| value.to_str().ok());
-    let status =
-        file_service::accept_internal_upload(&state, file_id, query.expires, &query.signature, content_type, body)
-            .await?;
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok());
+    let status = file_service::accept_internal_upload(
+        &state,
+        file_id,
+        query.expires,
+        &query.signature,
+        content_type,
+        body,
+    )
+    .await?;
     Ok(status)
 }
 

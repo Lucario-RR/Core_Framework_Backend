@@ -8,19 +8,13 @@ pub mod utils;
 
 use std::sync::Arc;
 
-use axum::{
-    middleware,
-    routing::{delete, get, patch, post, put},
-    Router,
-};
+use axum::{middleware, routing::get, Router};
 use sqlx::{migrate::Migrator, PgPool};
 use tower_cookies::CookieManagerLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
-    api::{
-        admin, auth_routes, files, internal, privacy, users,
-    },
+    api::{admin, auth_routes, files, internal, privacy, users},
     config::AppConfig,
     request_context::inject_request_context,
 };
@@ -59,9 +53,4 @@ pub fn build_router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(inject_request_context))
         .with_state(state)
-}
-
-#[allow(dead_code)]
-fn _routes_used_to_keep_imports_honest() {
-    let _ = (delete, patch, post, put);
 }

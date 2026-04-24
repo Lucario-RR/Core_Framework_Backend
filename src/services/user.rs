@@ -1,24 +1,29 @@
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
     api::contracts::{
-        Acknowledgement, AccountDeactivateRequest, AvatarUpdateRequest, EmailAddress, EmailAddressCreateRequest,
-        EmailChangeRequestCreateRequest, Passkey, PasskeyRegistrationOptions, PasskeyRegistrationOptionsRequest,
-        PasskeyRegistrationVerifyRequest, PhoneNumber, PhoneNumberCreateRequest, ProfileUpdateRequest,
-        RecoveryCodeList, SecurityReportCreateRequest, Session, SessionBulkRevokeRequest, TotpEnableRequest,
-        TotpSetup, UserProfile, UserSecuritySummary, VerificationCodeRequest,
+        AccountDeactivateRequest, Acknowledgement, AvatarUpdateRequest, EmailAddress,
+        EmailAddressCreateRequest, EmailChangeRequestCreateRequest, Passkey,
+        PasskeyRegistrationOptions, PasskeyRegistrationOptionsRequest,
+        PasskeyRegistrationVerifyRequest, PhoneNumber, PhoneNumberCreateRequest,
+        ProfileUpdateRequest, RecoveryCodeList, SecurityReportCreateRequest, Session,
+        SessionBulkRevokeRequest, TotpEnableRequest, TotpSetup, UserProfile, UserSecuritySummary,
+        VerificationCodeRequest,
     },
     auth::{self, AuthContext},
     error::{AppError, AppResult},
     request_context::RequestContext,
-    services::{auth as auth_service, shared},
+    services::shared,
     AppState,
 };
 
-pub async fn get_me(state: &AppState, auth_context: &AuthContext) -> AppResult<(UserProfile, String)> {
+pub async fn get_me(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<(UserProfile, String)> {
     let profile = shared::load_user_profile(&state.pool, auth_context.account_id).await?;
     let etag = current_profile_etag(&state.pool, auth_context.account_id).await?;
     Ok((profile, etag))
@@ -94,7 +99,10 @@ pub async fn set_avatar(
     get_me(state, auth_context).await
 }
 
-pub async fn remove_avatar(state: &AppState, auth_context: &AuthContext) -> AppResult<(UserProfile, String)> {
+pub async fn remove_avatar(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<(UserProfile, String)> {
     sqlx::query("update iam.account_profile set avatar_file_id = null, updated_at = now() where account_id = $1")
         .bind(auth_context.account_id)
         .execute(&state.pool)
@@ -110,7 +118,12 @@ pub async fn deactivate_own_account(
     context: &RequestContext,
     request: AccountDeactivateRequest,
 ) -> AppResult<Acknowledgement> {
-    verify_current_password(&state.pool, auth_context.account_id, &request.current_password).await?;
+    verify_current_password(
+        &state.pool,
+        auth_context.account_id,
+        &request.current_password,
+    )
+    .await?;
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
@@ -273,7 +286,10 @@ pub async fn revoke_own_session(
     Ok(())
 }
 
-pub async fn get_security_summary(state: &AppState, auth_context: &AuthContext) -> AppResult<UserSecuritySummary> {
+pub async fn get_security_summary(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<UserSecuritySummary> {
     shared::load_security_summary(&state.pool, auth_context.account_id).await
 }
 
@@ -283,7 +299,8 @@ pub async fn list_own_security_events(
     offset: i64,
     limit: i64,
 ) -> AppResult<(Vec<crate::api::contracts::SecurityEvent>, Option<String>)> {
-    shared::list_security_events_for_account(&state.pool, auth_context.account_id, offset, limit).await
+    shared::list_security_events_for_account(&state.pool, auth_context.account_id, offset, limit)
+        .await
 }
 
 pub async fn create_security_report(
@@ -328,7 +345,10 @@ pub async fn create_security_report(
     })
 }
 
-pub async fn list_passkeys(state: &AppState, auth_context: &AuthContext) -> AppResult<Vec<Passkey>> {
+pub async fn list_passkeys(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<Vec<Passkey>> {
     shared::list_passkeys(&state.pool, auth_context.account_id).await
 }
 
@@ -408,7 +428,8 @@ pub async fn verify_passkey_registration(
         .credential
         .get("id")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| AppError::validation("credential.id is required"))?;
+        .ok_or_else(|| AppError::validation("credential.id is required"))?
+        .to_string();
 
     let authenticator_id = Uuid::new_v4();
     let credential_bytes = credential_id.as_bytes().to_vec();
@@ -438,7 +459,7 @@ pub async fn verify_passkey_registration(
     )
     .bind(authenticator_id)
     .bind(auth_context.account_id.as_bytes().to_vec())
-    .bind(credential_id)
+    .bind(&credential_id)
     .bind(credential_bytes)
     .bind(request.credential)
     .execute(&mut *tx)
@@ -488,7 +509,10 @@ pub async fn delete_passkey(
     Ok(())
 }
 
-pub async fn create_totp_setup(state: &AppState, auth_context: &AuthContext) -> AppResult<TotpSetup> {
+pub async fn create_totp_setup(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<TotpSetup> {
     let secret = auth::generate_totp_secret();
     let secret_base32 = auth::encode_totp_secret(&secret);
     let user_profile = shared::load_user_profile(&state.pool, auth_context.account_id).await?;
@@ -632,7 +656,10 @@ pub async fn disable_totp(
     shared::load_security_summary(&state.pool, auth_context.account_id).await
 }
 
-pub async fn rotate_recovery_codes(state: &AppState, auth_context: &AuthContext) -> AppResult<RecoveryCodeList> {
+pub async fn rotate_recovery_codes(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<RecoveryCodeList> {
     let codes = auth::generate_recovery_codes(10);
     let new_set_id = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
@@ -685,7 +712,10 @@ pub async fn rotate_recovery_codes(state: &AppState, auth_context: &AuthContext)
     Ok(RecoveryCodeList { codes })
 }
 
-pub async fn list_emails(state: &AppState, auth_context: &AuthContext) -> AppResult<Vec<EmailAddress>> {
+pub async fn list_emails(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<Vec<EmailAddress>> {
     shared::load_email_addresses(&state.pool, auth_context.account_id).await
 }
 
@@ -732,7 +762,11 @@ pub async fn create_email(
     get_email_by_id(&state.pool, auth_context.account_id, email_id).await
 }
 
-pub async fn delete_email(state: &AppState, auth_context: &AuthContext, email_id: Uuid) -> AppResult<()> {
+pub async fn delete_email(
+    state: &AppState,
+    auth_context: &AuthContext,
+    email_id: Uuid,
+) -> AppResult<()> {
     let is_primary = sqlx::query_scalar::<_, bool>(
         r#"
         select coalesce(is_primary_for_account, false)
@@ -825,7 +859,9 @@ pub async fn make_email_primary(
     .ok_or_else(|| AppError::not_found("email not found"))?;
 
     if !verified {
-        return Err(AppError::conflict("email must be verified before it can become primary"));
+        return Err(AppError::conflict(
+            "email must be verified before it can become primary",
+        ));
     }
 
     let mut tx = state.pool.begin().await?;
@@ -942,8 +978,22 @@ pub async fn create_email_change_request(
     .await?;
     tx.commit().await?;
 
-    enqueue_email_link_with_purpose(&state.pool, auth_context.account_id, old_email_id, "change_old", context).await?;
-    enqueue_email_link_with_purpose(&state.pool, auth_context.account_id, new_email_id, "change_new", context).await?;
+    enqueue_email_link_with_purpose(
+        &state.pool,
+        auth_context.account_id,
+        old_email_id,
+        "change_old",
+        context,
+    )
+    .await?;
+    enqueue_email_link_with_purpose(
+        &state.pool,
+        auth_context.account_id,
+        new_email_id,
+        "change_new",
+        context,
+    )
+    .await?;
 
     Ok(Acknowledgement {
         status: "ok".to_string(),
@@ -951,7 +1001,10 @@ pub async fn create_email_change_request(
     })
 }
 
-pub async fn list_phones(state: &AppState, auth_context: &AuthContext) -> AppResult<Vec<PhoneNumber>> {
+pub async fn list_phones(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<Vec<PhoneNumber>> {
     shared::load_phone_numbers(&state.pool, auth_context.account_id).await
 }
 
@@ -981,7 +1034,11 @@ pub async fn create_phone(
     get_phone_by_id(&state.pool, auth_context.account_id, phone_id).await
 }
 
-pub async fn delete_phone(state: &AppState, auth_context: &AuthContext, phone_id: Uuid) -> AppResult<()> {
+pub async fn delete_phone(
+    state: &AppState,
+    auth_context: &AuthContext,
+    phone_id: Uuid,
+) -> AppResult<()> {
     let affected = sqlx::query(
         r#"
         update iam.account_phone
@@ -1072,7 +1129,9 @@ pub async fn make_phone_primary(
     .ok_or_else(|| AppError::not_found("phone not found"))?;
 
     if !verified {
-        return Err(AppError::conflict("phone must be verified before it can become primary"));
+        return Err(AppError::conflict(
+            "phone must be verified before it can become primary",
+        ));
     }
 
     let mut tx = state.pool.begin().await?;
@@ -1098,14 +1157,19 @@ pub async fn make_phone_primary(
 }
 
 async fn current_profile_etag(pool: &sqlx::PgPool, account_id: Uuid) -> AppResult<String> {
-    let revision = sqlx::query_scalar::<_, i64>("select row_version from iam.account where id = $1")
-        .bind(account_id)
-        .fetch_one(pool)
-        .await?;
+    let revision =
+        sqlx::query_scalar::<_, i64>("select row_version from iam.account where id = $1")
+            .bind(account_id)
+            .fetch_one(pool)
+            .await?;
     Ok(format!("W/\"rev-{revision}\""))
 }
 
-async fn enforce_if_match(pool: &sqlx::PgPool, account_id: Uuid, if_match: Option<&str>) -> AppResult<()> {
+async fn enforce_if_match(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    if_match: Option<&str>,
+) -> AppResult<()> {
     if let Some(if_match) = if_match {
         let current = current_profile_etag(pool, account_id).await?;
         if current != if_match {
@@ -1130,7 +1194,11 @@ async fn bump_account_revision(pool: &sqlx::PgPool, account_id: Uuid) -> AppResu
     Ok(())
 }
 
-async fn verify_current_password(pool: &sqlx::PgPool, account_id: Uuid, password: &str) -> AppResult<()> {
+async fn verify_current_password(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    password: &str,
+) -> AppResult<()> {
     let hash = sqlx::query_scalar::<_, String>(
         r#"
         select pc.password_hash
@@ -1154,7 +1222,11 @@ async fn verify_current_password(pool: &sqlx::PgPool, account_id: Uuid, password
     }
 }
 
-async fn get_email_by_id(pool: &sqlx::PgPool, account_id: Uuid, email_id: Uuid) -> AppResult<EmailAddress> {
+async fn get_email_by_id(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    email_id: Uuid,
+) -> AppResult<EmailAddress> {
     let emails = shared::load_email_addresses(pool, account_id).await?;
     emails
         .into_iter()
@@ -1162,7 +1234,11 @@ async fn get_email_by_id(pool: &sqlx::PgPool, account_id: Uuid, email_id: Uuid) 
         .ok_or_else(|| AppError::not_found("email not found"))
 }
 
-async fn ensure_email_ownership(pool: &sqlx::PgPool, account_id: Uuid, email_id: Uuid) -> AppResult<()> {
+async fn ensure_email_ownership(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    email_id: Uuid,
+) -> AppResult<()> {
     let exists = sqlx::query_scalar::<_, bool>(
         r#"
         select exists (
@@ -1271,7 +1347,11 @@ async fn enqueue_email_link_with_purpose(
     Ok(())
 }
 
-async fn get_phone_by_id(pool: &sqlx::PgPool, account_id: Uuid, phone_id: Uuid) -> AppResult<PhoneNumber> {
+async fn get_phone_by_id(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    phone_id: Uuid,
+) -> AppResult<PhoneNumber> {
     let phones = shared::load_phone_numbers(pool, account_id).await?;
     phones
         .into_iter()

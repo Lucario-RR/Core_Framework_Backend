@@ -4,7 +4,9 @@ use tokio::fs;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use core_framework_backend::{build_router, config::AppConfig, error::AppError, AppState, MIGRATOR};
+use core_framework_backend::{
+    build_router, config::AppConfig, error::AppError, AppState, MIGRATOR,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
@@ -26,15 +28,18 @@ async fn main() -> Result<(), AppError> {
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     tracing::info!("listening on {bind_addr}");
-    axum::serve(listener, app).await.map_err(|error| AppError::internal(format!("server error: {error}")))
+    axum::serve(listener, app)
+        .await
+        .map_err(|error| AppError::internal(format!("server error: {error}")))
 }
 
 fn init_tracing() -> Result<WorkerGuard, AppError> {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,core_framework_backend=debug"));
     let log_dir = env::var("LOG_DIR").unwrap_or_else(|_| "logs".to_string());
-    std::fs::create_dir_all(&log_dir)
-        .map_err(|error| AppError::internal(format!("failed to create log directory {log_dir}: {error}")))?;
+    std::fs::create_dir_all(&log_dir).map_err(|error| {
+        AppError::internal(format!("failed to create log directory {log_dir}: {error}"))
+    })?;
 
     let file_appender = tracing_appender::rolling::never(&log_dir, "backend-debug.log");
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);

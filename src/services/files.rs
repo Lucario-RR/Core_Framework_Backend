@@ -7,6 +7,7 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use serde_json::json;
+use sqlx::Row;
 use tokio::fs;
 use uuid::Uuid;
 
@@ -25,7 +26,9 @@ pub async fn create_file_upload_intent(
     request: FileUploadIntentRequest,
 ) -> AppResult<FileUploadIntent> {
     if request.size <= 0 || request.size > 10 * 1024 * 1024 {
-        return Err(AppError::validation("size must be between 1 byte and 10 MB"));
+        return Err(AppError::validation(
+            "size must be between 1 byte and 10 MB",
+        ));
     }
 
     let filename = request.filename.clone();
@@ -52,8 +55,9 @@ pub async fn create_file_upload_intent(
     .await?;
 
     if let Some(payload) = cached {
-        let parsed = serde_json::from_value::<FileUploadIntent>(payload)
-            .map_err(|error| AppError::internal(format!("failed to decode idempotent file intent: {error}")))?;
+        let parsed = serde_json::from_value::<FileUploadIntent>(payload).map_err(|error| {
+            AppError::internal(format!("failed to decode idempotent file intent: {error}"))
+        })?;
         return Ok(parsed);
     }
 
@@ -105,7 +109,10 @@ pub async fn create_file_upload_intent(
     );
     let upload_url = format!(
         "{}/internal/uploads/{}?expires={}&signature={}",
-        state.config.app_base_url, file_id, expires_at.timestamp(), signature
+        state.config.app_base_url,
+        file_id,
+        expires_at.timestamp(),
+        signature
     );
     let response = FileUploadIntent {
         file_id,
@@ -129,7 +136,10 @@ pub async fn create_file_upload_intent(
     .bind(Uuid::new_v4())
     .bind(auth_context.account_id)
     .bind(idem_hash)
-    .bind(serde_json::to_value(&response).map_err(|error| AppError::internal(format!("failed to encode response: {error}")))?)
+    .bind(
+        serde_json::to_value(&response)
+            .map_err(|error| AppError::internal(format!("failed to encode response: {error}")))?,
+    )
     .execute(&state.pool)
     .await?;
 
@@ -166,7 +176,9 @@ pub async fn complete_file_upload(
         .await
         .map_err(|_| AppError::conflict("upload has not been received yet"))?;
     if metadata.len() as i64 != expected_size {
-        return Err(AppError::conflict("uploaded file size does not match the intent"));
+        return Err(AppError::conflict(
+            "uploaded file size does not match the intent",
+        ));
     }
 
     sqlx::query(
@@ -186,7 +198,11 @@ pub async fn complete_file_upload(
     shared::load_file_record(&state.pool, file_id, Some(auth_context.account_id)).await
 }
 
-pub async fn get_own_file(state: &AppState, auth_context: &AuthContext, file_id: Uuid) -> AppResult<FileRecord> {
+pub async fn get_own_file(
+    state: &AppState,
+    auth_context: &AuthContext,
+    file_id: Uuid,
+) -> AppResult<FileRecord> {
     shared::load_file_record(&state.pool, file_id, Some(auth_context.account_id)).await
 }
 
@@ -225,8 +241,16 @@ pub async fn accept_internal_upload(
     content_type: Option<&str>,
     body: Bytes,
 ) -> AppResult<StatusCode> {
-    if !auth::verify_ephemeral_url(&state.config.jwt_secret, "upload", file_id, expires, signature) {
-        return Err(AppError::unauthorized("upload signature is invalid or expired"));
+    if !auth::verify_ephemeral_url(
+        &state.config.jwt_secret,
+        "upload",
+        file_id,
+        expires,
+        signature,
+    ) {
+        return Err(AppError::unauthorized(
+            "upload signature is invalid or expired",
+        ));
     }
 
     let row = sqlx::query(
@@ -252,11 +276,15 @@ pub async fn accept_internal_upload(
     let object_key: String = row.try_get("object_key")?;
 
     if body.len() as i64 != expected_size {
-        return Err(AppError::validation("uploaded body size does not match the intent"));
+        return Err(AppError::validation(
+            "uploaded body size does not match the intent",
+        ));
     }
     if let Some(content_type) = content_type {
         if content_type != expected_content_type {
-            return Err(AppError::validation("content type does not match the upload intent"));
+            return Err(AppError::validation(
+                "content type does not match the upload intent",
+            ));
         }
     }
 
@@ -266,10 +294,12 @@ pub async fn accept_internal_upload(
     }
     fs::write(path, &body).await?;
 
-    sqlx::query("update file.file_asset set status = 'scan_pending', updated_at = now() where id = $1")
-        .bind(file_id)
-        .execute(&state.pool)
-        .await?;
+    sqlx::query(
+        "update file.file_asset set status = 'scan_pending', updated_at = now() where id = $1",
+    )
+    .bind(file_id)
+    .execute(&state.pool)
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -280,8 +310,16 @@ pub async fn serve_internal_download(
     expires: i64,
     signature: &str,
 ) -> AppResult<impl IntoResponse> {
-    if !auth::verify_ephemeral_url(&state.config.jwt_secret, "download", file_id, expires, signature) {
-        return Err(AppError::unauthorized("download signature is invalid or expired"));
+    if !auth::verify_ephemeral_url(
+        &state.config.jwt_secret,
+        "download",
+        file_id,
+        expires,
+        signature,
+    ) {
+        return Err(AppError::unauthorized(
+            "download signature is invalid or expired",
+        ));
     }
 
     let row = sqlx::query(
@@ -317,8 +355,9 @@ pub async fn serve_internal_download(
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
-            .map_err(|error| AppError::internal(format!("invalid content disposition header: {error}")))?,
+        HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).map_err(
+            |error| AppError::internal(format!("invalid content disposition header: {error}")),
+        )?,
     );
 
     Ok((headers, bytes))

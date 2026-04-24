@@ -1,23 +1,22 @@
 use axum::{
-    extract::{Extension, Path, Query, State},
+    extract::{Extension, Path, State},
     http::HeaderMap,
     routing::{get, post},
     Json, Router,
 };
 
 use crate::{
-    api::contracts::FileUploadIntentRequest,
-    auth,
-    request_context::RequestContext,
-    services::files as file_service,
-    utils::envelope,
-    AppState,
+    api::contracts::FileUploadIntentRequest, auth, request_context::RequestContext,
+    services::files as file_service, utils::envelope, AppState,
 };
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/files/uploads", post(create_file_upload_intent))
-        .route("/files/uploads/{file_id}/complete", post(complete_file_upload))
+        .route(
+            "/files/uploads/{file_id}/complete",
+            post(complete_file_upload),
+        )
         .route("/me/files/{file_id}", get(get_own_file))
         .route("/me/files/{file_id}/download", get(get_own_file_download))
 }
@@ -33,8 +32,13 @@ async fn create_file_upload_intent(
         .get("Idempotency-Key")
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| crate::error::AppError::validation("Idempotency-Key header is required"))?;
-    let intent = file_service::create_file_upload_intent(&state, &auth_context, idempotency_key, request).await?;
-    Ok((axum::http::StatusCode::CREATED, Json(envelope(&context.request_id, intent))))
+    let intent =
+        file_service::create_file_upload_intent(&state, &auth_context, idempotency_key, request)
+            .await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(envelope(&context.request_id, intent)),
+    ))
 }
 
 async fn complete_file_upload(

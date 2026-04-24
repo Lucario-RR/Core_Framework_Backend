@@ -1,13 +1,16 @@
 use axum::{
     extract::{Extension, Path, Query, State},
     http::HeaderMap,
-    routing::{get, post, put},
+    routing::get,
     Json, Router,
 };
 use tower_cookies::{Cookie, Cookies};
 
 use crate::{
-    api::contracts::{CookiePreferencesUpdateRequest, PaginationQuery, PrivacyConsentCreateRequest, PrivacyRequestCreateRequest},
+    api::contracts::{
+        CookiePreferencesUpdateRequest, PaginationQuery, PrivacyConsentCreateRequest,
+        PrivacyRequestCreateRequest,
+    },
     auth,
     request_context::RequestContext,
     services::privacy as privacy_service,
@@ -18,10 +21,22 @@ use crate::{
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/legal/documents", get(list_legal_documents))
-        .route("/me/privacy-consents", get(list_privacy_consents).post(create_privacy_consents))
-        .route("/me/privacy-requests", get(list_privacy_requests).post(create_privacy_request))
-        .route("/me/privacy-requests/{privacy_request_id}", get(get_privacy_request))
-        .route("/privacy/cookie-preferences", get(get_cookie_preferences).put(set_cookie_preferences))
+        .route(
+            "/me/privacy-consents",
+            get(list_privacy_consents).post(create_privacy_consents),
+        )
+        .route(
+            "/me/privacy-requests",
+            get(list_privacy_requests).post(create_privacy_request),
+        )
+        .route(
+            "/me/privacy-requests/{privacy_request_id}",
+            get(get_privacy_request),
+        )
+        .route(
+            "/privacy/cookie-preferences",
+            get(get_cookie_preferences).put(set_cookie_preferences),
+        )
 }
 
 async fn list_legal_documents(
@@ -50,7 +65,10 @@ async fn create_privacy_consents(
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let consents = privacy_service::create_privacy_consents(&state, &auth_context, request).await?;
-    Ok((axum::http::StatusCode::CREATED, Json(envelope(&context.request_id, consents))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(envelope(&context.request_id, consents)),
+    ))
 }
 
 async fn list_privacy_requests(
@@ -61,8 +79,13 @@ async fn list_privacy_requests(
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
     let (offset, limit) = pagination(query)?;
-    let (requests, next_cursor) = privacy_service::list_privacy_requests(&state, &auth_context, offset, limit).await?;
-    Ok(Json(envelope_with_cursor(&context.request_id, requests, next_cursor)))
+    let (requests, next_cursor) =
+        privacy_service::list_privacy_requests(&state, &auth_context, offset, limit).await?;
+    Ok(Json(envelope_with_cursor(
+        &context.request_id,
+        requests,
+        next_cursor,
+    )))
 }
 
 async fn create_privacy_request(
@@ -72,8 +95,12 @@ async fn create_privacy_request(
     Json(request): Json<PrivacyRequestCreateRequest>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
-    let privacy_request = privacy_service::create_privacy_request(&state, &auth_context, request).await?;
-    Ok((axum::http::StatusCode::CREATED, Json(envelope(&context.request_id, privacy_request))))
+    let privacy_request =
+        privacy_service::create_privacy_request(&state, &auth_context, request).await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(envelope(&context.request_id, privacy_request)),
+    ))
 }
 
 async fn get_privacy_request(
@@ -83,7 +110,8 @@ async fn get_privacy_request(
     Path(privacy_request_id): Path<uuid::Uuid>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
-    let privacy_request = privacy_service::get_privacy_request(&state, &auth_context, privacy_request_id).await?;
+    let privacy_request =
+        privacy_service::get_privacy_request(&state, &auth_context, privacy_request_id).await?;
     Ok(Json(envelope(&context.request_id, privacy_request)))
 }
 

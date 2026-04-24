@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Algorithm, Argon2, Params, Version,
@@ -164,8 +162,14 @@ pub fn decode_access_token(config: &AppConfig, token: &str) -> AppResult<AccessT
     Ok(decoded.claims)
 }
 
-pub fn set_auth_cookies(cookies: &Cookies, config: &AppConfig, refresh_token: &str, csrf_token: &str) {
-    let refresh_expiry = OffsetDateTime::now_utc() + time::Duration::seconds(config.refresh_token_ttl_seconds);
+pub fn set_auth_cookies(
+    cookies: &Cookies,
+    config: &AppConfig,
+    refresh_token: &str,
+    csrf_token: &str,
+) {
+    let refresh_expiry =
+        OffsetDateTime::now_utc() + time::Duration::seconds(config.refresh_token_ttl_seconds);
 
     let mut refresh_cookie = Cookie::new("refresh_token", refresh_token.to_string());
     refresh_cookie.set_http_only(true);
@@ -224,7 +228,10 @@ pub async fn require_auth(state: &AppState, headers: &HeaderMap) -> AppResult<Au
     })
 }
 
-pub async fn optional_auth(state: &AppState, headers: &HeaderMap) -> AppResult<Option<AuthContext>> {
+pub async fn optional_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> AppResult<Option<AuthContext>> {
     if headers.get(http::header::AUTHORIZATION).is_none() {
         return Ok(None);
     }
@@ -242,7 +249,9 @@ pub fn extract_bearer_token(headers: &HeaderMap) -> AppResult<String> {
         .map_err(|_| AppError::unauthorized("authorization header is invalid"))?;
 
     let Some(token) = value.strip_prefix("Bearer ") else {
-        return Err(AppError::unauthorized("authorization header must use Bearer"));
+        return Err(AppError::unauthorized(
+            "authorization header must use Bearer",
+        ));
     };
 
     Ok(token.trim().to_string())
@@ -317,7 +326,12 @@ pub fn generate_recovery_codes(count: usize) -> Vec<String> {
         .collect()
 }
 
-pub fn sign_ephemeral_url(secret: &str, purpose: &str, resource_id: Uuid, expires_at_epoch: i64) -> String {
+pub fn sign_ephemeral_url(
+    secret: &str,
+    purpose: &str,
+    resource_id: Uuid,
+    expires_at_epoch: i64,
+) -> String {
     let payload = format!("{purpose}:{resource_id}:{expires_at_epoch}");
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("secret is valid");
     mac.update(payload.as_bytes());
@@ -416,9 +430,9 @@ pub async fn load_session_roles_and_scopes(
 }
 
 pub fn notification_payload(channel: &str, subject: &str, details: Value) -> Value {
-    let mut payload = HashMap::new();
-    payload.insert("channel", Value::String(channel.to_string()));
-    payload.insert("subject", Value::String(subject.to_string()));
-    payload.insert("details", details);
-    Value::Object(payload.into_iter().collect())
+    json!({
+        "channel": channel,
+        "subject": subject,
+        "details": details
+    })
 }

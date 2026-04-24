@@ -5,12 +5,11 @@ use uuid::Uuid;
 
 use crate::{
     api::contracts::{
-        CookiePreferences, CookiePreferencesUpdateRequest, LegalDocument, PrivacyConsent, PrivacyConsentCreateRequest,
-        PrivacyRequest, PrivacyRequestCreateRequest,
+        CookiePreferences, CookiePreferencesUpdateRequest, LegalDocument, PrivacyConsent,
+        PrivacyConsentCreateRequest, PrivacyRequest, PrivacyRequestCreateRequest,
     },
     auth::AuthContext,
     error::{AppError, AppResult},
-    services::shared,
     AppState,
 };
 
@@ -67,7 +66,10 @@ pub async fn list_legal_documents(state: &AppState) -> AppResult<Vec<LegalDocume
         .collect())
 }
 
-pub async fn list_privacy_consents(state: &AppState, auth_context: &AuthContext) -> AppResult<Vec<PrivacyConsent>> {
+pub async fn list_privacy_consents(
+    state: &AppState,
+    auth_context: &AuthContext,
+) -> AppResult<Vec<PrivacyConsent>> {
     let rows = sqlx::query_as::<_, ConsentRow>(
         r#"
         select
@@ -103,7 +105,9 @@ pub async fn create_privacy_consents(
     request: PrivacyConsentCreateRequest,
 ) -> AppResult<Vec<PrivacyConsent>> {
     if request.documents.is_empty() {
-        return Err(AppError::validation("documents must contain at least one item"));
+        return Err(AppError::validation(
+            "documents must contain at least one item",
+        ));
     }
 
     for document in request.documents {

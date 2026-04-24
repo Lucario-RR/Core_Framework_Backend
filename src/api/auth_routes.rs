@@ -9,9 +9,10 @@ use tower_cookies::Cookies;
 
 use crate::{
     api::contracts::{
-        Acknowledgement, EmailVerificationConfirmRequest, EmailVerificationResendRequest, LoginRequest, MfaVerifyRequest,
-        PasskeyAuthenticationOptionsRequest, PasskeyAuthenticationVerifyRequest, PasswordChangeRequest,
-        PasswordForgotRequest, PasswordResetRequest, RegisterRequest,
+        Acknowledgement, EmailVerificationConfirmRequest, EmailVerificationResendRequest,
+        LoginRequest, MfaVerifyRequest, PasskeyAuthenticationOptionsRequest,
+        PasskeyAuthenticationVerifyRequest, PasswordChangeRequest, PasswordForgotRequest,
+        PasswordResetRequest, RegisterRequest,
     },
     auth,
     request_context::RequestContext,
@@ -31,7 +32,10 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/password/forgot", post(start_password_reset))
         .route("/auth/password/reset", post(complete_password_reset))
         .route("/auth/email/verify", post(verify_email_challenge))
-        .route("/auth/email/resend", post(resend_primary_email_verification))
+        .route(
+            "/auth/email/resend",
+            post(resend_primary_email_verification),
+        )
         .route("/auth/mfa/verify", post(verify_mfa_challenge))
         .route(
             "/auth/passkeys/authentication/options",
@@ -50,7 +54,10 @@ async fn register(
     Json(request): Json<RegisterRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
     let session = auth_service::register(&state, &cookies, &context, request).await?;
-    Ok((StatusCode::CREATED, Json(envelope(&context.request_id, session))))
+    Ok((
+        StatusCode::CREATED,
+        Json(envelope(&context.request_id, session)),
+    ))
 }
 
 async fn register_admin(
@@ -59,8 +66,12 @@ async fn register_admin(
     cookies: Cookies,
     Json(request): Json<RegisterRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
-    let session = auth_service::register_admin_bootstrap(&state, &cookies, &context, request).await?;
-    Ok((StatusCode::CREATED, Json(envelope(&context.request_id, session))))
+    let session =
+        auth_service::register_admin_bootstrap(&state, &cookies, &context, request).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(envelope(&context.request_id, session)),
+    ))
 }
 
 async fn login(
@@ -70,10 +81,14 @@ async fn login(
     Json(request): Json<LoginRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
     match auth_service::login(&state, &cookies, &context, request).await? {
-        LoginOutcome::Session(session) => Ok((StatusCode::OK, Json(envelope(&context.request_id, session))).into_response()),
-        LoginOutcome::Challenge(challenge) => {
-            Ok((StatusCode::ACCEPTED, Json(envelope(&context.request_id, challenge))).into_response())
+        LoginOutcome::Session(session) => {
+            Ok((StatusCode::OK, Json(envelope(&context.request_id, session))).into_response())
         }
+        LoginOutcome::Challenge(challenge) => Ok((
+            StatusCode::ACCEPTED,
+            Json(envelope(&context.request_id, challenge)),
+        )
+            .into_response()),
     }
 }
 
@@ -104,7 +119,8 @@ async fn change_password(
     Json(request): Json<PasswordChangeRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
     let auth_context = auth::require_auth(&state, &headers).await?;
-    let acknowledgement = auth_service::change_password(&state, &auth_context, &context, request).await?;
+    let acknowledgement =
+        auth_service::change_password(&state, &auth_context, &context, request).await?;
     Ok(Json(envelope(&context.request_id, acknowledgement)))
 }
 
@@ -114,7 +130,10 @@ async fn start_password_reset(
     Json(request): Json<PasswordForgotRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
     let acknowledgement = auth_service::start_password_reset(&state, &context, request).await?;
-    Ok((StatusCode::ACCEPTED, Json(envelope(&context.request_id, acknowledgement))))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(envelope(&context.request_id, acknowledgement)),
+    ))
 }
 
 async fn complete_password_reset(
@@ -140,8 +159,12 @@ async fn resend_primary_email_verification(
     Extension(context): Extension<RequestContext>,
     Json(request): Json<EmailVerificationResendRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
-    let acknowledgement = auth_service::resend_primary_email_verification(&state, &context, request).await?;
-    Ok((StatusCode::ACCEPTED, Json(envelope(&context.request_id, acknowledgement))))
+    let acknowledgement =
+        auth_service::resend_primary_email_verification(&state, &context, request).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(envelope(&context.request_id, acknowledgement)),
+    ))
 }
 
 async fn verify_mfa_challenge(
@@ -172,7 +195,8 @@ async fn verify_passkey_authentication(
     cookies: Cookies,
     Json(request): Json<PasskeyAuthenticationVerifyRequest>,
 ) -> crate::error::AppResult<impl IntoResponse> {
-    let session = auth_service::verify_passkey_authentication(&state, &cookies, &context, request).await?;
+    let session =
+        auth_service::verify_passkey_authentication(&state, &cookies, &context, request).await?;
     Ok(Json(envelope(&context.request_id, session)))
 }
 

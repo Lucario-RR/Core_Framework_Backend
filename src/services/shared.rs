@@ -5,8 +5,9 @@ use uuid::Uuid;
 
 use crate::{
     api::contracts::{
-        AdminSecurityEvent, AdminSystemSetting, AdminUserSummary, AuditLogEntry, EmailAddress, FileRecord,
-        Passkey, PhoneNumber, RoleDefinition, SecurityEvent, Session, UserProfile, UserSecuritySummary,
+        AdminSecurityEvent, AdminSystemSetting, AdminUserSummary, AuditLogEntry, EmailAddress,
+        FileRecord, Passkey, PhoneNumber, RoleDefinition, SecurityEvent, Session, UserProfile,
+        UserSecuritySummary,
     },
     auth,
     error::{AppError, AppResult},
@@ -196,7 +197,9 @@ pub async fn get_global_setting_value(pool: &PgPool, key: &str) -> AppResult<Val
     .await?;
 
     let Some(row) = row else {
-        return Err(AppError::not_found(format!("system setting {key} does not exist")));
+        return Err(AppError::not_found(format!(
+            "system setting {key} does not exist"
+        )));
     };
 
     row.try_get("value")
@@ -217,7 +220,11 @@ pub async fn get_global_setting_i64(pool: &PgPool, key: &str) -> AppResult<i64> 
         .unwrap_or_default())
 }
 
-pub async fn get_account_setting_bool(pool: &PgPool, account_id: Uuid, key: &str) -> AppResult<bool> {
+pub async fn get_account_setting_bool(
+    pool: &PgPool,
+    account_id: Uuid,
+    key: &str,
+) -> AppResult<bool> {
     let row = sqlx::query(
         r#"
         select value_json
@@ -306,7 +313,10 @@ pub async fn load_phone_numbers(pool: &PgPool, account_id: Uuid) -> AppResult<Ve
         .collect())
 }
 
-pub async fn load_security_summary(pool: &PgPool, account_id: Uuid) -> AppResult<UserSecuritySummary> {
+pub async fn load_security_summary(
+    pool: &PgPool,
+    account_id: Uuid,
+) -> AppResult<UserSecuritySummary> {
     let password_row = sqlx::query(
         r#"
         select pc.must_rotate
@@ -421,9 +431,13 @@ pub async fn load_security_summary(pool: &PgPool, account_id: Uuid) -> AppResult
 
     let global_all_users = get_global_setting_bool(pool, "auth.mfa.required_for_all_users").await?;
     let global_admins = get_global_setting_bool(pool, "auth.mfa.required_for_admins").await?;
-    let account_mfa_required = get_account_setting_bool(pool, account_id, "security.require_mfa_enrollment").await?;
+    let account_mfa_required =
+        get_account_setting_bool(pool, account_id, "security.require_mfa_enrollment").await?;
     let is_admin = roles.iter().any(|role| role == "admin");
-    let mfa_required = global_all_users || any_role_requires_mfa || account_mfa_required || (global_admins && is_admin);
+    let mfa_required = global_all_users
+        || any_role_requires_mfa
+        || account_mfa_required
+        || (global_admins && is_admin);
     let mfa_enabled = totp_enabled || passkey_count > 0;
 
     let mut enrolled_factors = Vec::new();
@@ -514,7 +528,9 @@ pub async fn load_user_profile(pool: &PgPool, account_id: Uuid) -> AppResult<Use
         status: base.status,
         primary_email,
         primary_phone,
-        display_name: base.display_name.unwrap_or_else(|| "Unnamed User".to_string()),
+        display_name: base
+            .display_name
+            .unwrap_or_else(|| "Unnamed User".to_string()),
         roles,
         scopes,
         default_currency: base.default_currency,
@@ -530,7 +546,10 @@ pub async fn load_user_profile(pool: &PgPool, account_id: Uuid) -> AppResult<Use
     })
 }
 
-pub async fn load_admin_user_summary(pool: &PgPool, account_id: Uuid) -> AppResult<AdminUserSummary> {
+pub async fn load_admin_user_summary(
+    pool: &PgPool,
+    account_id: Uuid,
+) -> AppResult<AdminUserSummary> {
     let sql = format!(
         r#"
         select
@@ -587,7 +606,9 @@ pub async fn load_admin_user_summary(pool: &PgPool, account_id: Uuid) -> AppResu
     Ok(AdminUserSummary {
         id: base.id,
         status: base.status,
-        display_name: base.display_name.unwrap_or_else(|| "Unnamed User".to_string()),
+        display_name: base
+            .display_name
+            .unwrap_or_else(|| "Unnamed User".to_string()),
         primary_email,
         primary_phone,
         roles,
@@ -760,7 +781,9 @@ pub async fn list_sessions(
     Ok((
         rows.map(|row| Session {
             id: row.id,
-            is_current: current_session_id.map(|current| current == row.id).unwrap_or(false),
+            is_current: current_session_id
+                .map(|current| current == row.id)
+                .unwrap_or(false),
             authenticated_aal: row.authenticated_aal as i32,
             device_label: row.device_label,
             user_agent: row.user_agent,
@@ -971,14 +994,20 @@ pub async fn list_passkeys(pool: &PgPool, account_id: Uuid) -> AppResult<Vec<Pas
         .into_iter()
         .map(|row| Passkey {
             id: row.id,
-            display_name: row.display_name.unwrap_or_else(|| "Unnamed passkey".to_string()),
+            display_name: row
+                .display_name
+                .unwrap_or_else(|| "Unnamed passkey".to_string()),
             created_at: row.created_at,
             last_used_at: row.last_used_at,
         })
         .collect())
 }
 
-pub async fn load_file_record(pool: &PgPool, file_id: Uuid, owner_account_id: Option<Uuid>) -> AppResult<FileRecord> {
+pub async fn load_file_record(
+    pool: &PgPool,
+    file_id: Uuid,
+    owner_account_id: Option<Uuid>,
+) -> AppResult<FileRecord> {
     let row = sqlx::query_as::<_, FileRecordRow>(
         r#"
         select
@@ -1130,12 +1159,18 @@ pub async fn load_system_setting(pool: &PgPool, key: &str) -> AppResult<AdminSys
     })
 }
 
-pub async fn count_admin_overview(pool: &PgPool, public_bootstrap_enabled: bool) -> AppResult<crate::api::contracts::AdminOverview> {
-    let account_count = sqlx::query_scalar::<_, i64>("select count(*) from iam.account").fetch_one(pool).await?;
-    let active_account_count =
-        sqlx::query_scalar::<_, i64>("select count(*) from iam.account where deleted_at is null and status_code = 'active'")
-            .fetch_one(pool)
-            .await?;
+pub async fn count_admin_overview(
+    pool: &PgPool,
+    public_bootstrap_enabled: bool,
+) -> AppResult<crate::api::contracts::AdminOverview> {
+    let account_count = sqlx::query_scalar::<_, i64>("select count(*) from iam.account")
+        .fetch_one(pool)
+        .await?;
+    let active_account_count = sqlx::query_scalar::<_, i64>(
+        "select count(*) from iam.account where deleted_at is null and status_code = 'active'",
+    )
+    .fetch_one(pool)
+    .await?;
     let suspended_account_count = sqlx::query_scalar::<_, i64>(
         r#"
         select count(distinct account_id)
@@ -1148,10 +1183,11 @@ pub async fn count_admin_overview(pool: &PgPool, public_bootstrap_enabled: bool)
     )
     .fetch_one(pool)
     .await?;
-    let deleted_account_count =
-        sqlx::query_scalar::<_, i64>("select count(*) from iam.account where deleted_at is not null or status_code = 'deleted'")
-            .fetch_one(pool)
-            .await?;
+    let deleted_account_count = sqlx::query_scalar::<_, i64>(
+        "select count(*) from iam.account where deleted_at is not null or status_code = 'deleted'",
+    )
+    .fetch_one(pool)
+    .await?;
     let admin_account_count = sqlx::query_scalar::<_, i64>(
         r#"
         select count(distinct ar.account_id)
@@ -1162,16 +1198,28 @@ pub async fn count_admin_overview(pool: &PgPool, public_bootstrap_enabled: bool)
     )
     .fetch_one(pool)
     .await?;
-    let role_count = sqlx::query_scalar::<_, i64>("select count(*) from iam.role").fetch_one(pool).await?;
+    let role_count = sqlx::query_scalar::<_, i64>("select count(*) from iam.role")
+        .fetch_one(pool)
+        .await?;
     let active_session_count =
         sqlx::query_scalar::<_, i64>("select count(*) from auth.session where revoked_at is null and absolute_expires_at > now()")
             .fetch_one(pool)
             .await?;
-    let security_event_count = sqlx::query_scalar::<_, i64>("select count(*) from ops.security_event").fetch_one(pool).await?;
-    let audit_log_count = sqlx::query_scalar::<_, i64>("select count(*) from ops.audit_log").fetch_one(pool).await?;
+    let security_event_count =
+        sqlx::query_scalar::<_, i64>("select count(*) from ops.security_event")
+            .fetch_one(pool)
+            .await?;
+    let audit_log_count = sqlx::query_scalar::<_, i64>("select count(*) from ops.audit_log")
+        .fetch_one(pool)
+        .await?;
     let privacy_request_count =
-        sqlx::query_scalar::<_, i64>("select count(*) from privacy.data_subject_request").fetch_one(pool).await?;
-    let system_setting_count = sqlx::query_scalar::<_, i64>("select count(*) from ops.system_setting").fetch_one(pool).await?;
+        sqlx::query_scalar::<_, i64>("select count(*) from privacy.data_subject_request")
+            .fetch_one(pool)
+            .await?;
+    let system_setting_count =
+        sqlx::query_scalar::<_, i64>("select count(*) from ops.system_setting")
+            .fetch_one(pool)
+            .await?;
 
     Ok(crate::api::contracts::AdminOverview {
         account_count,

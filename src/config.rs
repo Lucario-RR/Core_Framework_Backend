@@ -20,9 +20,9 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> AppResult<Self> {
-        let bind_addr = required("BIND_ADDR")?.parse::<SocketAddr>().map_err(|error| {
-            AppError::internal(format!("failed to parse BIND_ADDR: {error}"))
-        })?;
+        let bind_addr = required("BIND_ADDR")?
+            .parse::<SocketAddr>()
+            .map_err(|error| AppError::internal(format!("failed to parse BIND_ADDR: {error}")))?;
 
         Ok(Self {
             database_url: required("DATABASE_URL")?,
@@ -35,14 +35,18 @@ impl AppConfig {
             access_token_ttl_seconds: env_i64("ACCESS_TOKEN_TTL_SECONDS", 900)?,
             refresh_token_ttl_seconds: env_i64("REFRESH_TOKEN_TTL_SECONDS", 60 * 60 * 24 * 30)?,
             password_reset_ttl_seconds: env_i64("PASSWORD_RESET_TTL_SECONDS", 60 * 60)?,
-            email_verification_ttl_seconds: env_i64("EMAIL_VERIFICATION_TTL_SECONDS", 60 * 60 * 24)?,
+            email_verification_ttl_seconds: env_i64(
+                "EMAIL_VERIFICATION_TTL_SECONDS",
+                60 * 60 * 24,
+            )?,
             totp_issuer: env_or("TOTP_ISSUER", "CoreFrameworkBackend"),
         })
     }
 }
 
 fn required(key: &str) -> AppResult<String> {
-    env::var(key).map_err(|_| AppError::internal(format!("missing required environment variable {key}")))
+    env::var(key)
+        .map_err(|_| AppError::internal(format!("missing required environment variable {key}")))
 }
 
 fn env_or(key: &str, default: &str) -> String {

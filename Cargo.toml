@@ -2,6 +2,16 @@
 name = "core_framework_backend"
 version = "0.1.0"
 edition = "2021"
+default-run = "core_framework_backend"
+
+[features]
+default = []
+maintenance = []
+
+[[bin]]
+name = "maintenance"
+path = "src/bin/maintenance.rs"
+required-features = ["maintenance"]
 
 [dependencies]
 argon2 = "0.5"

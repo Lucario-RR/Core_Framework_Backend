@@ -29,7 +29,11 @@ where
     }
 }
 
-pub fn envelope_with_cursor<T>(request_id: &str, data: T, next_cursor: Option<String>) -> ApiEnvelope<T>
+pub fn envelope_with_cursor<T>(
+    request_id: &str,
+    data: T,
+    next_cursor: Option<String>,
+) -> ApiEnvelope<T>
 where
     T: Serialize,
 {
@@ -54,7 +58,8 @@ pub fn decode_offset_cursor(cursor: Option<&str>) -> AppResult<i64> {
     let decoded = URL_SAFE_NO_PAD
         .decode(cursor.as_bytes())
         .map_err(|_| AppError::validation("cursor is invalid"))?;
-    let decoded = String::from_utf8(decoded).map_err(|_| AppError::validation("cursor is invalid"))?;
+    let decoded =
+        String::from_utf8(decoded).map_err(|_| AppError::validation("cursor is invalid"))?;
 
     let Some(value) = decoded.strip_prefix("offset:") else {
         return Err(AppError::validation("cursor is invalid"));

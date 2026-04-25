@@ -403,41 +403,9 @@ pub async fn load_security_summary(
     .fetch_one(pool)
     .await?;
 
-    let roles = sqlx::query_scalar::<_, String>(
-        r#"
-        select r.code
-        from iam.account_role ar
-        join iam.role r on r.id = ar.role_id
-        where ar.account_id = $1
-        "#,
-    )
-    .bind(account_id)
-    .fetch_all(pool)
-    .await?;
-
-    let any_role_requires_mfa = sqlx::query_scalar::<_, bool>(
-        r#"
-        select exists (
-            select 1
-            from iam.account_role ar
-            join iam.role r on r.id = ar.role_id
-            where ar.account_id = $1 and r.requires_mfa = true
-        )
-        "#,
-    )
-    .bind(account_id)
-    .fetch_one(pool)
-    .await?;
-
-    let global_all_users = get_global_setting_bool(pool, "auth.mfa.required_for_all_users").await?;
-    let global_admins = get_global_setting_bool(pool, "auth.mfa.required_for_admins").await?;
     let account_mfa_required =
         get_account_setting_bool(pool, account_id, "security.require_mfa_enrollment").await?;
-    let is_admin = roles.iter().any(|role| role == "admin");
-    let mfa_required = global_all_users
-        || any_role_requires_mfa
-        || account_mfa_required
-        || (global_admins && is_admin);
+    let mfa_required = account_mfa_required;
     let mfa_enabled = totp_enabled || passkey_count > 0;
 
     let mut enrolled_factors = Vec::new();

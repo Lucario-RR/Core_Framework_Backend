@@ -174,36 +174,38 @@ pub async fn login(
     clear_lockout_failures(&state.pool, "email", &subject_hash).await?;
 
     let security = shared::load_security_summary(&state.pool, account_id).await?;
-    if security.mfa_enabled || security.mfa_required {
+    if security.totp_enabled {
         let available_factors = available_mfa_factors(&state.pool, account_id).await?;
-        let challenge_id = Uuid::new_v4();
-        let expires_at = Utc::now() + Duration::minutes(10);
+        if !available_factors.is_empty() {
+            let challenge_id = Uuid::new_v4();
+            let expires_at = Utc::now() + Duration::minutes(10);
 
-        sqlx::query(
-            r#"
-            insert into auth.login_challenge (
-                id, account_id, challenge_type, available_factors_json, details_json, expires_at, created_at
+            sqlx::query(
+                r#"
+                insert into auth.login_challenge (
+                    id, account_id, challenge_type, available_factors_json, details_json, expires_at, created_at
+                )
+                values ($1, $2, 'MFA_REQUIRED', $3, $4, $5, now())
+                "#,
             )
-            values ($1, $2, 'MFA_REQUIRED', $3, $4, $5, now())
-            "#,
-        )
-        .bind(challenge_id)
-        .bind(account_id)
-        .bind(json!(available_factors))
-        .bind(json!({
-            "rememberMe": request.remember_me.unwrap_or(false),
-            "ipAddress": context.ip_address,
-            "userAgent": context.user_agent
-        }))
-        .bind(expires_at)
-        .execute(&state.pool)
-        .await?;
+            .bind(challenge_id)
+            .bind(account_id)
+            .bind(json!(available_factors))
+            .bind(json!({
+                "rememberMe": request.remember_me.unwrap_or(false),
+                "ipAddress": context.ip_address,
+                "userAgent": context.user_agent
+            }))
+            .bind(expires_at)
+            .execute(&state.pool)
+            .await?;
 
-        return Ok(LoginOutcome::Challenge(MfaChallenge {
-            challenge_id,
-            available_factors,
-            expires_at,
-        }));
+            return Ok(LoginOutcome::Challenge(MfaChallenge {
+                challenge_id,
+                available_factors,
+                expires_at,
+            }));
+        }
     }
 
     let session = issue_session(
@@ -1178,6 +1180,7 @@ pub async fn create_local_account(
     let password_authenticator_id = Uuid::new_v4();
     let now = Utc::now();
     let status_code = requested_status.unwrap_or_else(|| "active".to_string());
+    let require_mfa_enrollment = mfa_enrollment_required_for_new_account(pool, &role_codes).await?;
 
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -1307,6 +1310,22 @@ pub async fn create_local_account(
         .await?;
     }
 
+    if require_mfa_enrollment {
+        sqlx::query(
+            r#"
+            insert into ops.account_setting (id, account_id, setting_key, value_json, updated_at)
+            values ($1, $2, 'security.require_mfa_enrollment', $3, now())
+            on conflict (account_id, setting_key)
+            do update set value_json = excluded.value_json, updated_at = now()
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(account_id)
+        .bind(json!(true))
+        .execute(&mut *tx)
+        .await?;
+    }
+
     for document in request.accepted_legal_documents {
         let notice_type = match document.document_key.as_str() {
             "terms_of_service" => "TERMS",
@@ -1365,7 +1384,10 @@ pub async fn create_local_account(
         "account",
         Some(account_id),
         Some("Account created.".to_string()),
-        json!({ "bootstrap": created_by_account_id.is_none() }),
+        json!({
+            "bootstrap": created_by_account_id.is_none(),
+            "mfaEnrollmentRequired": require_mfa_enrollment
+        }),
         Some(&context.request_id),
     )
     .await?;
@@ -1387,6 +1409,32 @@ pub async fn create_local_account(
         account_id,
         primary_email_id,
     })
+}
+
+async fn mfa_enrollment_required_for_new_account(
+    pool: &PgPool,
+    role_codes: &[String],
+) -> AppResult<bool> {
+    let global_all_users =
+        shared::get_global_setting_bool(pool, "auth.mfa.required_for_all_users").await?;
+    let global_admins =
+        shared::get_global_setting_bool(pool, "auth.mfa.required_for_admins").await?;
+    let role_requires_mfa = sqlx::query_scalar::<_, bool>(
+        r#"
+        select exists (
+            select 1
+            from iam.role
+            where code = any($1::text[])
+              and requires_mfa = true
+        )
+        "#,
+    )
+    .bind(role_codes.to_vec())
+    .fetch_one(pool)
+    .await?;
+    let is_admin = role_codes.iter().any(|role| role == "admin");
+
+    Ok(global_all_users || role_requires_mfa || (global_admins && is_admin))
 }
 
 pub async fn issue_session(

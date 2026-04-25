@@ -67,7 +67,7 @@ Useful options:
 
 - `--no-migrations`: connect without running migrations first
 - `--leave-email-pending`: create the account without marking the primary email as verified
-- `--no-totp`: skip TOTP enrolment; use this only if admin MFA is disabled or you plan to enrol MFA another way
+- `--no-totp`: skip TOTP enrolment. Login will still issue a session; clients can use `user.security.mfaRequired && !user.security.totpEnabled` to show a skippable TOTP enrolment prompt.
 - `--require-password-change`: force the account to rotate its password after login
 
 Inspect recent users:
@@ -101,6 +101,7 @@ Copy `.env.example` to `.env` before running locally. The backend loads `.env` a
 | `APP_BASE_URL` | Public base URL used when generating external-facing links and signed URLs. |
 | `JWT_SECRET` | Secret used to sign JWT access tokens. Replace the example with a long random value. |
 | `COOKIE_SECURE` | Marks auth cookies as HTTPS-only when set to `true`; use `false` for plain local HTTP. |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to make credentialed API requests. Defaults include `APP_BASE_URL`, `http://localhost:5173`, and `http://127.0.0.1:5173`. |
 | `PUBLIC_ADMIN_BOOTSTRAP_ENABLED` | Enables first-admin bootstrap registration when the matching database setting also allows it. |
 | `UPLOAD_DIR` | Local directory used by the development file upload/download adapter. |
 | `ACCESS_TOKEN_TTL_SECONDS` | Lifetime of bearer access tokens in seconds. |
@@ -116,4 +117,5 @@ Copy `.env.example` to `.env` before running locally. The backend loads `.env` a
 - File uploads start at `/api/v1/files/uploads`, then use the returned signed local upload URL under `/internal/uploads/...`.
 - Private downloads start at `/api/v1/me/files/{fileId}/download`, which returns a short-lived signed local download URL.
 - Bootstrap admin registration is controlled by both `PUBLIC_ADMIN_BOOTSTRAP_ENABLED` and the seeded system setting `registration.bootstrap_admin_enabled`.
+- Browser clients must send credentialed auth requests, for example `fetch(url, { credentials: "include" })`. Calls to `/api/v1/auth/refresh` must also send `X-CSRF-Token` with the current `csrf_token` cookie value.
 - Local debug logs are written to `logs/backend-debug.log` by default. Set `LOG_DIR` to move them somewhere else.

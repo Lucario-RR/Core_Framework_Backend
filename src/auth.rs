@@ -179,21 +179,31 @@ pub fn set_auth_cookies(
     refresh_cookie.set_expires(refresh_expiry);
     cookies.add(refresh_cookie);
 
+    let mut old_csrf_cookie = Cookie::new("csrf_token", String::new());
+    old_csrf_cookie.set_path("/api/v1");
+    old_csrf_cookie.make_removal();
+    cookies.add(old_csrf_cookie);
+
     let mut csrf_cookie = Cookie::new("csrf_token", csrf_token.to_string());
     csrf_cookie.set_http_only(false);
     csrf_cookie.set_secure(config.cookie_secure);
-    csrf_cookie.set_path("/api/v1");
+    csrf_cookie.set_path("/");
     csrf_cookie.set_same_site(SameSite::Lax);
     csrf_cookie.set_expires(refresh_expiry);
     cookies.add(csrf_cookie);
 }
 
 pub fn clear_auth_cookies(cookies: &Cookies) {
-    for name in ["refresh_token", "csrf_token"] {
-        let mut cookie = Cookie::new(name.to_string(), String::new());
-        cookie.set_path("/api/v1");
-        cookie.make_removal();
-        cookies.add(cookie);
+    let mut refresh_cookie = Cookie::new("refresh_token", String::new());
+    refresh_cookie.set_path("/api/v1");
+    refresh_cookie.make_removal();
+    cookies.add(refresh_cookie);
+
+    for path in ["/", "/api/v1"] {
+        let mut csrf_cookie = Cookie::new("csrf_token", String::new());
+        csrf_cookie.set_path(path);
+        csrf_cookie.make_removal();
+        cookies.add(csrf_cookie);
     }
 }
 

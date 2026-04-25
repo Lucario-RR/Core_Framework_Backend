@@ -1,5 +1,7 @@
 use std::{env, net::SocketAddr, path::PathBuf};
 
+use http::HeaderValue;
+
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone)]
@@ -9,6 +11,7 @@ pub struct AppConfig {
     pub app_base_url: String,
     pub jwt_secret: String,
     pub cookie_secure: bool,
+    pub cors_allowed_origins: Vec<HeaderValue>,
     pub public_admin_bootstrap_enabled: bool,
     pub upload_dir: PathBuf,
     pub access_token_ttl_seconds: i64,
@@ -24,12 +27,19 @@ impl AppConfig {
             .parse::<SocketAddr>()
             .map_err(|error| AppError::internal(format!("failed to parse BIND_ADDR: {error}")))?;
 
+        let app_base_url = env_or("APP_BASE_URL", "http://localhost:11451");
+        let cors_allowed_origins = env_csv_header_values(
+            "CORS_ALLOWED_ORIGINS",
+            &format!("{app_base_url},http://localhost:5173,http://127.0.0.1:5173"),
+        )?;
+
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             bind_addr,
-            app_base_url: env_or("APP_BASE_URL", "http://localhost:11451"),
+            app_base_url,
             jwt_secret: required("JWT_SECRET")?,
             cookie_secure: env_bool("COOKIE_SECURE", false),
+            cors_allowed_origins,
             public_admin_bootstrap_enabled: env_bool("PUBLIC_ADMIN_BOOTSTRAP_ENABLED", false),
             upload_dir: PathBuf::from(env_or("UPLOAD_DIR", "storage")),
             access_token_ttl_seconds: env_i64("ACCESS_TOKEN_TTL_SECONDS", 900)?,
@@ -62,6 +72,20 @@ fn env_bool(key: &str, default: bool) -> bool {
             _ => None,
         })
         .unwrap_or(default)
+}
+
+fn env_csv_header_values(key: &str, default: &str) -> AppResult<Vec<HeaderValue>> {
+    let value = env_or(key, default);
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            HeaderValue::from_str(origin).map_err(|error| {
+                AppError::internal(format!("failed to parse {key} origin {origin}: {error}"))
+            })
+        })
+        .collect()
 }
 
 fn env_i64(key: &str, default: i64) -> AppResult<i64> {

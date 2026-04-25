@@ -481,7 +481,7 @@ fn print_created_admin(admin: &CreatedAdmin) {
     } else {
         println!();
         println!(
-            "TOTP MFA was not enrolled. If admin MFA is required, login will return an MFA challenge."
+            "TOTP MFA was not enrolled. Login is not blocked solely by MFA policy; clients should use user.security.mfaRequired and user.security.totpEnabled to show a skippable enrollment prompt."
         );
     }
 }

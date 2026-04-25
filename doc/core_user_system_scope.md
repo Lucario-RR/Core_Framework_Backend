@@ -163,8 +163,8 @@ Must-have:
 
 Important:
 
-- force 2FA for admins
-- force 2FA globally or by role
+- require or recommend 2FA enrollment for newly registered admins
+- require or recommend 2FA enrollment globally or by role at account creation
 - backup recovery method
 - suspicious recovery event notification
 
@@ -270,7 +270,7 @@ Must-have:
 
 Important:
 
-- force 2FA for all users
+- require or recommend 2FA enrollment for newly registered users
 - allowed email domains
 - blocked email domains
 - login rate-limit policy
@@ -426,7 +426,7 @@ Add next:
 - active session list and remote revoke
 - password history and reuse prevention
 - force password reset
-- force 2FA for admin
+- require or recommend 2FA enrollment for new admins
 - rate-limiting and lockout policy
 - IP and device tracking
 
@@ -580,7 +580,7 @@ These should be treated as design requirements.
 - generate a unique salt per password
 - never log passwords, tokens, OTP secrets, or recovery codes
 - store refresh or session tokens only as hashes
-- require MFA for admin accounts
+- require MFA enrollment for new admin accounts, but do not block an existing login solely because no factor has been enrolled
 - record register/login IP and user agent
 - audit every admin write
 - create a security event for failed login, password reset, MFA change, session revoke, and account freeze
@@ -626,7 +626,7 @@ The highest-value features for your first implementation are:
 - password reset and change flows
 - session and device revocation
 - admin freeze and restore
-- force 2FA for admins
+- require or recommend 2FA enrollment for new admins
 - structured errors
 - audit logs and security events
 - configurable system settings

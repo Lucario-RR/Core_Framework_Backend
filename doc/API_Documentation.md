@@ -13,6 +13,18 @@ Error note:
 - API error payloads include `error.urgencyLevel` on a 1-9 scale so clients and operators can distinguish low-friction request fixes from higher-urgency backend failures
 - see [Error_Handling_Guide.md](Error_Handling_Guide.md) for the urgency scale, local log path, and common recovery steps
 
+Health check:
+
+- the backend exposes an unauthenticated `GET /health` endpoint at the service root, not under `/api/v1`
+- a healthy server returns the standard acknowledgement envelope with `data.status` set to `ok` and `data.message` set to `service healthy`
+- use it for load balancers, uptime monitors, deployment smoke tests, and simple frontend/backend connectivity checks
+
+MFA login behavior:
+
+- `/auth/login` returns `202` with an MFA challenge only when the account already has an active confirmed TOTP factor
+- MFA enrollment policy is reported on successful session responses as `data.user.security.mfaRequired`; clients should treat `mfaRequired && !totpEnabled` as a skippable TOTP enrollment prompt, not as a failed login state
+- global and role MFA policy is captured for newly created accounts as an account-level enrollment flag; existing users are not blocked at login merely because they have no TOTP factor
+
 This companion note explains what changed:
 
 - the original promoted OpenAPI file had copied the full PriceTracker reference surface

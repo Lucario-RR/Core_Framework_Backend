@@ -34,6 +34,8 @@ servers:
   - url: http://localhost:11451/api/v1
     description: Local development
 tags:
+  - name: Health
+    description: Root-level service availability checks for load balancers, monitors, and local smoke tests.
   - name: Auth
     description: Account registration, login, refresh, logout, password reset, and login-time MFA flows.
   - name: Users
@@ -51,6 +53,33 @@ tags:
   - name: AdminSecurity
     description: Admin-only security-event, audit-log, session, and role-management endpoints.
 paths:
+  /health:
+    get:
+      tags:
+        - Health
+      operationId: healthCheck
+      summary: Check service health
+      description: Root-level unauthenticated endpoint that returns a small acknowledgement when the HTTP server is alive.
+      servers:
+        - url: https://api.example.com
+          description: Production root
+        - url: http://localhost:11451
+          description: Local development root
+      security: []
+      responses:
+        '200':
+          description: Server is alive and able to return JSON responses
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+              example:
+                data:
+                  status: ok
+                  message: service healthy
+                meta:
+                  requestId: req_01HZZZZZZZZZZ
+                  nextCursor: null
   /auth/register:
     post:
       tags:
@@ -119,7 +148,7 @@ paths:
         - Auth
       operationId: login
       summary: Authenticate with email and password
-      description: Authenticate a user. If MFA is enabled, the server returns a challenge instead of a session.
+      description: Authenticate a user. If the account already has an active confirmed TOTP factor, the server returns an MFA challenge instead of a session. Policy-only MFA enrollment requirements do not block login; they are returned on successful sessions as user.security.mfaRequired so clients can show a skippable enrollment prompt.
       requestBody:
         required: true
         content:
@@ -140,7 +169,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthSessionEnvelope'
         '202':
-          description: Second factor required before a session can be issued
+          description: Existing TOTP factor must be verified before a session can be issued
           content:
             application/json:
               schema:
@@ -2126,12 +2155,15 @@ components:
           example: true
         mfaEnabled:
           type: boolean
+          description: True when the account has at least one active MFA-capable credential, such as confirmed TOTP or a registered passkey.
           example: true
         mfaRequired:
           type: boolean
+          description: Account-level MFA enrollment policy captured at account creation or by an admin update. This is a prompt signal, not a login blocker when no TOTP factor exists.
           example: false
         totpEnabled:
           type: boolean
+          description: True when the account has an active confirmed TOTP factor. Password login returns a 202 MFA challenge only when this is true and a challenge factor is available.
           example: true
         recoveryCodesAvailable:
           type: boolean
@@ -2383,6 +2415,7 @@ components:
           example: FreshPassword!234
     MfaChallenge:
       type: object
+      description: Returned from password login only when an existing confirmed TOTP factor must be verified.
       additionalProperties: false
       required:
         - challengeId
@@ -2398,7 +2431,6 @@ components:
             enum:
               - totp
               - recovery_code
-              - passkey
           example:
             - totp
             - recovery_code
@@ -3976,6 +4008,7 @@ components:
           example: Full administrative control over the core user-management platform.
         requiresMfa:
           type: boolean
+          description: When true, newly created accounts with this role are marked for MFA enrollment. It does not retroactively block existing users at login.
           example: true
         permissionCodes:
           type: array

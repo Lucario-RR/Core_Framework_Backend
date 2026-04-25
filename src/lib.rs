@@ -11,7 +11,10 @@ use std::sync::Arc;
 use axum::{middleware, routing::get, Router};
 use sqlx::{migrate::Migrator, PgPool};
 use tower_cookies::CookieManagerLayer;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowHeaders, AllowMethods, CorsLayer},
+    trace::TraceLayer,
+};
 
 use crate::{
     api::{admin, auth_routes, files, internal, privacy, users},
@@ -37,6 +40,12 @@ impl AppState {
 }
 
 pub fn build_router(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_credentials(true)
+        .allow_origin(state.config.cors_allowed_origins.clone())
+        .allow_headers(AllowHeaders::mirror_request())
+        .allow_methods(AllowMethods::mirror_request());
+
     let api_router = Router::new()
         .merge(auth_routes::routes())
         .merge(users::routes())
@@ -48,7 +57,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(api::health))
         .nest("/api/v1", api_router)
         .merge(internal::routes())
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(CookieManagerLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(inject_request_context))

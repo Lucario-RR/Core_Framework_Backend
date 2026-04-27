@@ -35,7 +35,7 @@ servers:
     description: Local development
 tags:
   - name: Health
-    description: Root-level service availability checks for load balancers, monitors, and local smoke tests.
+    description: Versioned service availability checks for load balancers, monitors, and local smoke tests.
   - name: Auth
     description: Account registration, login, refresh, logout, password reset, and login-time MFA flows.
   - name: Users
@@ -59,12 +59,7 @@ paths:
         - Health
       operationId: healthCheck
       summary: Check service health
-      description: Root-level unauthenticated endpoint that returns a small acknowledgement when the HTTP server is alive.
-      servers:
-        - url: https://api.example.com
-          description: Production root
-        - url: http://localhost:11451
-          description: Local development root
+      description: Versioned unauthenticated endpoint that returns a small acknowledgement when the HTTP server is alive.
       security: []
       responses:
         '200':
@@ -86,7 +81,7 @@ paths:
         - Auth
       operationId: register
       summary: Register a new user account
-      description: Create a standard user account, capture required legal document acceptances, and issue an authenticated session.
+      description: Create a standard user account, optionally consuming an invitation code for invite-only registration and role assignment, capture required legal document acceptances, and issue an authenticated session.
       requestBody:
         required: true
         content:
@@ -96,10 +91,12 @@ paths:
             examples:
               default:
                 value:
+                  username: alex
                   email: alex@example.com
                   password: StrongPassword!234
                   displayName: Alex
                   primaryPhone: '+447700900123'
+                  invitationCode: null
                   acceptedLegalDocuments:
                     - documentKey: terms_of_service
                       version: '2026-04-01'
@@ -147,8 +144,8 @@ paths:
       tags:
         - Auth
       operationId: login
-      summary: Authenticate with email and password
-      description: Authenticate a user. If the account already has an active confirmed TOTP factor, the server returns an MFA challenge instead of a session. Policy-only MFA enrollment requirements do not block login; they are returned on successful sessions as user.security.mfaRequired so clients can show a skippable enrollment prompt.
+      summary: Authenticate with username, email, or phone and password
+      description: Authenticate a user with the preferred login field, which can contain a username, email address, or login-enabled phone number. If the account already has an active confirmed TOTP factor, the server returns an MFA challenge instead of a session. Policy-only MFA enrollment requirements do not block login; they are returned on successful sessions as user.security.mfaRequired so clients can show a skippable enrollment prompt.
       requestBody:
         required: true
         content:
@@ -158,7 +155,7 @@ paths:
             examples:
               default:
                 value:
-                  email: alex@example.com
+                  login: alex@example.com
                   password: StrongPassword!234
                   rememberMe: true
       responses:
@@ -238,6 +235,23 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '409':
           $ref: '#/components/responses/Conflict'
+  /auth/password/policy:
+    get:
+      tags:
+        - Auth
+      operationId: getPasswordPolicy
+      summary: Get active password policy
+      description: Return backend-enforced password rules so clients can run a matching precheck before submitting a password.
+      security: []
+      responses:
+        '200':
+          description: Active password policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordPolicyEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /auth/password/forgot:
     post:
       tags:
@@ -1347,6 +1361,79 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /admin/invitations:
+    post:
+      tags:
+        - AdminSettings
+      operationId: createAdminInvitations
+      summary: Generate registration invitation code(s)
+      description: Generate one or more invitation codes. Codes may be single-use or multi-use and may have an explicit expiry or no expiry.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminInvitationCreateRequest'
+      responses:
+        '201':
+          description: Invitation code(s) generated and returned once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationCreateResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/password-policy:
+    get:
+      tags:
+        - AdminSettings
+      operationId: getAdminPasswordPolicy
+      summary: Get password policy as an admin
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active password policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordPolicyEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    patch:
+      tags:
+        - AdminSettings
+      operationId: updateAdminPasswordPolicy
+      summary: Update backend-enforced password policy
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordPolicy'
+      responses:
+        '200':
+          description: Updated password policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordPolicyEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /admin/audit-logs:
     get:
       tags:
@@ -1423,6 +1510,7 @@ paths:
         - AdminUsers
       operationId: createAdminManagedUser
       summary: Create a user or admin account from the admin console
+      description: Creates an account and returns one-time initial account text for copy or download. If password is omitted, the backend generates a compliant initial password.
       security:
         - bearerAuth: []
       requestBody:
@@ -1433,11 +1521,11 @@ paths:
               $ref: '#/components/schemas/AdminUserCreateRequest'
       responses:
         '201':
-          description: Account created
+          description: Account created with one-time initial credential text
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AdminUserSummaryEnvelope'
+                $ref: '#/components/schemas/AdminUserCreateResponseEnvelope'
         '400':
           $ref: '#/components/responses/ValidationError'
         '401':
@@ -2078,6 +2166,14 @@ components:
         - displayName
         - acceptedLegalDocuments
       properties:
+        username:
+          type:
+            - string
+            - 'null'
+          minLength: 3
+          maxLength: 80
+          pattern: ^[a-zA-Z0-9._-]+$
+          example: alex
         email:
           type: string
           format: email
@@ -2098,6 +2194,11 @@ components:
             - 'null'
           pattern: ^\+[1-9]\d{6,14}$
           example: '+447700900123'
+        invitationCode:
+          type:
+            - string
+            - 'null'
+          example: inv_k1uYb5xTq9nA4pM2sR8cVQ
         acceptedLegalDocuments:
           type: array
           minItems: 1
@@ -2107,13 +2208,25 @@ components:
       type: object
       additionalProperties: false
       required:
-        - email
         - password
       properties:
+        login:
+          description: Preferred login identifier; may be username, email, or login-enabled phone number.
+          type:
+            - string
+            - 'null'
+          example: alex@example.com
         email:
+          description: Legacy email login field; use login for new clients.
           type: string
           format: email
           example: alex@example.com
+        username:
+          description: Legacy username login field; use login for new clients.
+          type:
+            - string
+            - 'null'
+          example: alex
         password:
           type: string
           minLength: 1
@@ -2122,6 +2235,55 @@ components:
         rememberMe:
           type: boolean
           example: true
+    PasswordPolicy:
+      type: object
+      additionalProperties: false
+      required:
+        - minLength
+        - requireLetter
+        - requireNumber
+        - requireSpecial
+        - requireUppercase
+        - requireLowercase
+        - disallowUsername
+        - disallowEmail
+      properties:
+        minLength:
+          type: integer
+          minimum: 1
+          example: 12
+        requireLetter:
+          type: boolean
+          example: true
+        requireNumber:
+          type: boolean
+          example: true
+        requireSpecial:
+          type: boolean
+          example: false
+        requireUppercase:
+          type: boolean
+          example: false
+        requireLowercase:
+          type: boolean
+          example: false
+        disallowUsername:
+          type: boolean
+          example: true
+        disallowEmail:
+          type: boolean
+          example: true
+    PasswordPolicyEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/PasswordPolicy'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
     UserSecuritySummary:
       type: object
       additionalProperties: false
@@ -2214,6 +2376,11 @@ components:
       properties:
         id:
           $ref: '#/components/schemas/Identifier'
+        username:
+          type:
+            - string
+            - 'null'
+          example: alex
         status:
           type: string
           enum:
@@ -2798,6 +2965,7 @@ components:
         - id
         - phoneNumber
         - label
+        - isLoginEnabled
         - isPrimary
         - isSmsEnabled
         - isVerified
@@ -2817,6 +2985,9 @@ components:
             - sms_alerts
             - other
           example: primary
+        isLoginEnabled:
+          type: boolean
+          example: true
         isPrimary:
           type: boolean
           example: true
@@ -3275,6 +3446,11 @@ components:
       properties:
         id:
           $ref: '#/components/schemas/Identifier'
+        username:
+          type:
+            - string
+            - 'null'
+          example: sam.admin
         status:
           type: string
           example: active
@@ -3389,14 +3565,22 @@ components:
       additionalProperties: false
       required:
         - email
-        - password
         - displayName
       properties:
+        username:
+          type:
+            - string
+            - 'null'
+          minLength: 3
+          maxLength: 80
+          pattern: ^[a-zA-Z0-9._-]+$
+          example: sam.admin
         email:
           type: string
           format: email
           example: sam@example.com
         password:
+          description: Optional. When omitted, the backend generates a compliant initial password and returns it once.
           type: string
           minLength: 12
           maxLength: 128
@@ -3428,10 +3612,50 @@ components:
             - suspended
             - frozen
           example: active
+    AdminUserCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - user
+        - initialPassword
+        - accountText
+      properties:
+        user:
+          $ref: '#/components/schemas/AdminUserSummary'
+        initialPassword:
+          description: One-time plaintext initial password for copy/download workflows. The backend never stores this value.
+          type: string
+          example: StrongPassword!234
+        accountText:
+          type: string
+          example: |-
+            Account details
+            Name: Sam Admin
+            Username: sam.admin
+            Email: sam@example.com
+            Password: StrongPassword!234
+            Roles: user
+    AdminUserCreateResponseEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminUserCreateResponse'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
     AdminUserUpdateRequest:
       type: object
       additionalProperties: false
       properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 80
+          pattern: ^[a-zA-Z0-9._-]+$
+          example: sam.admin
         displayName:
           type: string
           minLength: 2
@@ -3536,6 +3760,107 @@ components:
             - 'null'
           maxLength: 400
           example: Suspicious activity under review.
+    AdminInvitationCreateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+          example: 3
+        email:
+          type:
+            - string
+            - 'null'
+          format: email
+          example: invited@example.com
+        roleCodes:
+          type: array
+          items:
+            type: string
+          example:
+            - user
+        maxUses:
+          type: integer
+          minimum: 1
+          default: 1
+          example: 5
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: '2026-05-01T00:00:00Z'
+        expiresInSeconds:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          example: 86400
+    AdminInvitationCode:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - code
+        - roleCodes
+        - maxUses
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        code:
+          description: Plain invitation code returned once; only its hash is stored.
+          type: string
+          example: inv_k1uYb5xTq9nA4pM2sR8cVQ
+        email:
+          type:
+            - string
+            - 'null'
+          format: email
+          example: invited@example.com
+        roleCodes:
+          type: array
+          items:
+            type: string
+          example:
+            - user
+        maxUses:
+          type: integer
+          example: 5
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: null
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-26T10:00:00Z'
+    AdminInvitationCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - invitations
+      properties:
+        invitations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminInvitationCode'
+    AdminInvitationCreateResponseEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminInvitationCreateResponse'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
     AdminSystemSetting:
       type: object
       additionalProperties: false

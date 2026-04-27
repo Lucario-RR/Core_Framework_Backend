@@ -666,20 +666,6 @@ pub async fn rotate_recovery_codes(
 
     sqlx::query(
         r#"
-        update auth.recovery_code_set
-        set status = 'replaced',
-            replaced_by_set_id = $2
-        where account_id = $1
-          and status = 'active'
-        "#,
-    )
-    .bind(auth_context.account_id)
-    .bind(new_set_id)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        r#"
         insert into auth.recovery_code_set (id, account_id, code_count, status, issued_at)
         values ($1, $2, $3, 'active', now())
         "#,
@@ -707,6 +693,21 @@ pub async fn rotate_recovery_codes(
         .execute(&mut *tx)
         .await?;
     }
+
+    sqlx::query(
+        r#"
+        update auth.recovery_code_set
+        set status = 'replaced',
+            replaced_by_set_id = $2
+        where account_id = $1
+          and status = 'active'
+          and id <> $2
+        "#,
+    )
+    .bind(auth_context.account_id)
+    .bind(new_set_id)
+    .execute(&mut *tx)
+    .await?;
 
     tx.commit().await?;
     Ok(RecoveryCodeList { codes })
@@ -1143,6 +1144,7 @@ pub async fn make_phone_primary(
         r#"
         update iam.account_phone
         set is_primary_for_account = true,
+            is_login_enabled = true,
             updated_at = now()
         where id = $1 and account_id = $2
         "#,

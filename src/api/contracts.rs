@@ -34,19 +34,36 @@ pub struct LegalDocumentAcceptance {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegisterRequest {
+    pub username: Option<String>,
     pub email: String,
     pub password: String,
     pub display_name: String,
     pub primary_phone: Option<String>,
+    pub invitation_code: Option<String>,
     pub accepted_legal_documents: Vec<LegalDocumentAcceptance>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LoginRequest {
-    pub email: String,
+    pub login: Option<String>,
+    pub email: Option<String>,
+    pub username: Option<String>,
     pub password: String,
     pub remember_me: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PasswordPolicy {
+    pub min_length: i64,
+    pub require_letter: bool,
+    pub require_number: bool,
+    pub require_special: bool,
+    pub require_uppercase: bool,
+    pub require_lowercase: bool,
+    pub disallow_username: bool,
+    pub disallow_email: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +86,7 @@ pub struct UserSecuritySummary {
 #[serde(rename_all = "camelCase")]
 pub struct UserProfile {
     pub id: Uuid,
+    pub username: Option<String>,
     pub status: String,
     pub primary_email: String,
     pub primary_phone: Option<String>,
@@ -247,6 +265,7 @@ pub struct PhoneNumber {
     pub id: Uuid,
     pub phone_number: String,
     pub label: String,
+    pub is_login_enabled: bool,
     pub is_primary: bool,
     pub is_sms_enabled: bool,
     pub is_verified: bool,
@@ -362,6 +381,7 @@ pub struct AdminOverview {
 #[serde(rename_all = "camelCase")]
 pub struct AdminUserSummary {
     pub id: Uuid,
+    pub username: Option<String>,
     pub status: String,
     pub display_name: String,
     pub primary_email: String,
@@ -386,17 +406,27 @@ pub struct AdminUserSummary {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdminUserCreateRequest {
+    pub username: Option<String>,
     pub email: String,
-    pub password: String,
+    pub password: Option<String>,
     pub display_name: String,
     pub primary_phone: Option<String>,
     pub role_codes: Option<Vec<String>>,
     pub account_status: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminUserCreateResponse {
+    pub user: AdminUserSummary,
+    pub initial_password: String,
+    pub account_text: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdminUserUpdateRequest {
+    pub username: Option<String>,
     pub display_name: Option<String>,
     pub primary_email: Option<String>,
     pub primary_phone: Option<String>,
@@ -440,6 +470,35 @@ pub struct AdminSystemSetting {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdminSystemSettingUpdateRequest {
     pub value: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdminInvitationCreateRequest {
+    pub count: Option<i32>,
+    pub email: Option<String>,
+    pub role_codes: Option<Vec<String>>,
+    pub max_uses: Option<i32>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_in_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminInvitationCode {
+    pub id: Uuid,
+    pub code: String,
+    pub email: Option<String>,
+    pub role_codes: Vec<String>,
+    pub max_uses: i32,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminInvitationCreateResponse {
+    pub invitations: Vec<AdminInvitationCode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -59,6 +59,7 @@ end
 #[derive(Debug, FromRow)]
 struct AccountProfileRow {
     id: Uuid,
+    username: Option<String>,
     status: String,
     created_at: DateTime<Utc>,
     last_login_at: Option<DateTime<Utc>>,
@@ -89,6 +90,7 @@ struct PhoneRow {
     id: Uuid,
     phone_number: String,
     label: String,
+    is_login_enabled: bool,
     is_primary: bool,
     is_sms_enabled: bool,
     is_verified: bool,
@@ -285,6 +287,7 @@ pub async fn load_phone_numbers(pool: &PgPool, account_id: Uuid) -> AppResult<Ve
             id,
             e164_phone_number as phone_number,
             label,
+            is_login_enabled,
             is_primary_for_account as is_primary,
             is_sms_enabled,
             (verification_status = 'verified') as is_verified,
@@ -305,6 +308,7 @@ pub async fn load_phone_numbers(pool: &PgPool, account_id: Uuid) -> AppResult<Ve
             id: row.id,
             phone_number: row.phone_number,
             label: row.label,
+            is_login_enabled: row.is_login_enabled,
             is_primary: row.is_primary,
             is_sms_enabled: row.is_sms_enabled,
             is_verified: row.is_verified,
@@ -442,6 +446,7 @@ pub async fn load_user_profile(pool: &PgPool, account_id: Uuid) -> AppResult<Use
         r#"
         select
             a.id,
+            a.public_handle as username,
             {effective_status} as status,
             a.created_at,
             a.last_login_at,
@@ -493,6 +498,7 @@ pub async fn load_user_profile(pool: &PgPool, account_id: Uuid) -> AppResult<Use
 
     Ok(UserProfile {
         id: base.id,
+        username: base.username,
         status: base.status,
         primary_email,
         primary_phone,
@@ -522,6 +528,7 @@ pub async fn load_admin_user_summary(
         r#"
         select
             a.id,
+            a.public_handle as username,
             {effective_status} as status,
             a.created_at,
             a.last_login_at,
@@ -573,6 +580,7 @@ pub async fn load_admin_user_summary(
 
     Ok(AdminUserSummary {
         id: base.id,
+        username: base.username,
         status: base.status,
         display_name: base
             .display_name

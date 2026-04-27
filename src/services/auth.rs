@@ -1,4 +1,5 @@
 use chrono::{Duration, Utc};
+use rand::{rngs::OsRng, seq::SliceRandom, Rng};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use tower_cookies::Cookies;
@@ -10,13 +11,13 @@ use crate::{
         EmailVerificationResendRequest, LoginRequest, MfaChallenge, MfaVerifyRequest,
         PasskeyAuthenticationOptions, PasskeyAuthenticationOptionsRequest,
         PasskeyAuthenticationVerifyRequest, PasswordChangeRequest, PasswordForgotRequest,
-        PasswordResetRequest, RegisterRequest,
+        PasswordPolicy, PasswordResetRequest, RegisterRequest,
     },
     auth::{self, notification_payload, AuthContext},
     error::{AppError, AppResult},
     request_context::RequestContext,
     services::shared,
-    utils::normalize_email,
+    utils::{normalize_email, normalize_phone_number, normalize_username, validate_username},
     AppState,
 };
 
@@ -28,6 +29,12 @@ pub enum LoginOutcome {
 pub struct CreatedAccount {
     pub account_id: Uuid,
     pub primary_email_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+struct RegistrationInviteUse {
+    id: Uuid,
+    role_codes: Vec<String>,
 }
 
 pub async fn register(
@@ -42,19 +49,34 @@ pub async fn register(
         ));
     }
 
+    let invitation = if request.invitation_code.is_some() {
+        Some(load_registration_invite_for_request(&state.pool, &request).await?)
+    } else {
+        None
+    };
+
     if shared::get_global_setting_bool(&state.pool, "registration.invite_only").await? {
-        return Err(AppError::forbidden(
-            "invite-only registration is enabled and this endpoint requires an invite flow",
-        ));
+        if invitation.is_none() {
+            return Err(AppError::forbidden(
+                "invite-only registration is enabled and this endpoint requires an invitation code",
+            ));
+        }
     }
+
+    let role_codes = invitation
+        .as_ref()
+        .map(|invite| invite.role_codes.clone())
+        .unwrap_or_else(|| vec!["user".to_string()]);
+    let invitation_id = invitation.as_ref().map(|invite| invite.id);
 
     let created = create_local_account(
         &state.pool,
         context,
         request,
-        vec!["user".to_string()],
+        role_codes,
         None,
         Some("active".to_string()),
+        invitation_id,
         false,
     )
     .await?;
@@ -101,11 +123,236 @@ pub async fn register_admin_bootstrap(
         vec!["admin".to_string()],
         None,
         Some("active".to_string()),
+        None,
         false,
     )
     .await?;
 
     issue_session(state, cookies, context, created.account_id, false, 2).await
+}
+
+pub async fn load_password_policy(pool: &PgPool) -> AppResult<PasswordPolicy> {
+    let fallback_min_length = shared::get_global_setting_i64(pool, "auth.password.min_length")
+        .await?
+        .max(1);
+    let mut policy = default_password_policy(fallback_min_length);
+    let value = shared::get_global_setting_value(pool, "auth.password.policy").await?;
+
+    if let Some(min_length) = value.get("minLength").and_then(Value::as_i64) {
+        policy.min_length = min_length.max(1);
+    }
+    if let Some(require_letter) = value.get("requireLetter").and_then(Value::as_bool) {
+        policy.require_letter = require_letter;
+    }
+    if let Some(require_number) = value.get("requireNumber").and_then(Value::as_bool) {
+        policy.require_number = require_number;
+    }
+    if let Some(require_special) = value.get("requireSpecial").and_then(Value::as_bool) {
+        policy.require_special = require_special;
+    }
+    if let Some(require_uppercase) = value.get("requireUppercase").and_then(Value::as_bool) {
+        policy.require_uppercase = require_uppercase;
+    }
+    if let Some(require_lowercase) = value.get("requireLowercase").and_then(Value::as_bool) {
+        policy.require_lowercase = require_lowercase;
+    }
+    if let Some(disallow_username) = value.get("disallowUsername").and_then(Value::as_bool) {
+        policy.disallow_username = disallow_username;
+    }
+    if let Some(disallow_email) = value.get("disallowEmail").and_then(Value::as_bool) {
+        policy.disallow_email = disallow_email;
+    }
+
+    Ok(policy)
+}
+
+pub async fn generate_initial_password(
+    pool: &PgPool,
+    username: Option<&str>,
+    email: &str,
+) -> AppResult<String> {
+    let policy = load_password_policy(pool).await?;
+    let emails = vec![email.to_string()];
+    for _ in 0..50 {
+        let candidate = random_password_candidate(&policy);
+        if enforce_password_policy(&policy, &candidate, username, &emails).is_ok() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(AppError::internal(
+        "failed to generate a password that satisfies policy",
+    ))
+}
+
+pub async fn validate_password_policy_for_account(
+    pool: &PgPool,
+    account_id: Uuid,
+    password: &str,
+) -> AppResult<()> {
+    let policy = load_password_policy(pool).await?;
+    let (username, emails) = load_password_policy_identifiers(pool, account_id).await?;
+    enforce_password_policy(&policy, password, username.as_deref(), &emails)
+}
+
+fn default_password_policy(min_length: i64) -> PasswordPolicy {
+    PasswordPolicy {
+        min_length,
+        require_letter: true,
+        require_number: true,
+        require_special: false,
+        require_uppercase: false,
+        require_lowercase: false,
+        disallow_username: true,
+        disallow_email: true,
+    }
+}
+
+fn enforce_password_policy(
+    policy: &PasswordPolicy,
+    password: &str,
+    username: Option<&str>,
+    emails: &[String],
+) -> AppResult<()> {
+    let mut violations = Vec::new();
+    if password.chars().count() < policy.min_length as usize {
+        violations.push(json!({
+            "code": "min_length",
+            "message": format!("password must be at least {} characters", policy.min_length)
+        }));
+    }
+    if policy.require_letter && !password.chars().any(|ch| ch.is_ascii_alphabetic()) {
+        violations.push(json!({
+            "code": "letter_required",
+            "message": "password must include at least one letter"
+        }));
+    }
+    if policy.require_number && !password.chars().any(|ch| ch.is_ascii_digit()) {
+        violations.push(json!({
+            "code": "number_required",
+            "message": "password must include at least one number"
+        }));
+    }
+    if policy.require_special && !password.chars().any(|ch| ch.is_ascii_punctuation()) {
+        violations.push(json!({
+            "code": "special_required",
+            "message": "password must include at least one special character"
+        }));
+    }
+    if policy.require_uppercase && !password.chars().any(|ch| ch.is_ascii_uppercase()) {
+        violations.push(json!({
+            "code": "uppercase_required",
+            "message": "password must include at least one uppercase letter"
+        }));
+    }
+    if policy.require_lowercase && !password.chars().any(|ch| ch.is_ascii_lowercase()) {
+        violations.push(json!({
+            "code": "lowercase_required",
+            "message": "password must include at least one lowercase letter"
+        }));
+    }
+
+    let lowered_password = password.to_ascii_lowercase();
+    if policy.disallow_username {
+        if let Some(username) = username
+            .map(normalize_username)
+            .filter(|value| !value.is_empty())
+        {
+            if lowered_password.contains(&username) {
+                violations.push(json!({
+                    "code": "contains_username",
+                    "message": "password must not contain the username"
+                }));
+            }
+        }
+    }
+    if policy.disallow_email {
+        for email in emails {
+            let normalized_email = normalize_email(email);
+            let local_part = normalized_email.split('@').next().unwrap_or_default();
+            if (!normalized_email.is_empty() && lowered_password.contains(&normalized_email))
+                || (local_part.len() >= 3 && lowered_password.contains(local_part))
+            {
+                violations.push(json!({
+                    "code": "contains_email",
+                    "message": "password must not contain the email address"
+                }));
+                break;
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::validation("password does not meet policy")
+            .with_details(json!({ "violations": violations })))
+    }
+}
+
+fn random_password_candidate(policy: &PasswordPolicy) -> String {
+    const LOWER: &[u8] = b"abcdefghijkmnopqrstuvwxyz";
+    const UPPER: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+    const DIGITS: &[u8] = b"23456789";
+    const SPECIAL: &[u8] = b"!@#$%^&*()-_=+[]{}:,.?";
+    const ALL: &[u8] =
+        b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*()-_=+[]{}:,.?";
+
+    let mut rng = OsRng;
+    let mut chars = Vec::new();
+    if policy.require_letter && !policy.require_uppercase && !policy.require_lowercase {
+        chars.push(random_char(LOWER, &mut rng));
+    }
+    if policy.require_uppercase {
+        chars.push(random_char(UPPER, &mut rng));
+    }
+    if policy.require_lowercase {
+        chars.push(random_char(LOWER, &mut rng));
+    }
+    if policy.require_number {
+        chars.push(random_char(DIGITS, &mut rng));
+    }
+    if policy.require_special {
+        chars.push(random_char(SPECIAL, &mut rng));
+    }
+
+    let target_len = (policy.min_length as usize).max(16);
+    while chars.len() < target_len {
+        chars.push(random_char(ALL, &mut rng));
+    }
+    chars.shuffle(&mut rng);
+    chars.into_iter().collect()
+}
+
+fn random_char<R: Rng + ?Sized>(source: &[u8], rng: &mut R) -> char {
+    source[rng.gen_range(0..source.len())] as char
+}
+
+async fn load_password_policy_identifiers(
+    pool: &PgPool,
+    account_id: Uuid,
+) -> AppResult<(Option<String>, Vec<String>)> {
+    let username = sqlx::query_scalar::<_, Option<String>>(
+        "select public_handle from iam.account where id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+
+    let emails = sqlx::query_scalar::<_, String>(
+        r#"
+        select email
+        from iam.account_email
+        where account_id = $1
+          and deleted_at is null
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok((username, emails))
 }
 
 pub async fn login(
@@ -114,47 +361,87 @@ pub async fn login(
     context: &RequestContext,
     request: LoginRequest,
 ) -> AppResult<LoginOutcome> {
-    let normalized_email = normalize_email(&request.email);
-    let subject_hash = auth::sha256_hex(&normalized_email);
-    enforce_lockout(&state.pool, "email", &subject_hash).await?;
+    let login_identifier = resolve_login_identifier(&request)?;
+    let normalized_email = normalize_email(&login_identifier);
+    let normalized_phone = normalize_phone_number(&login_identifier);
+    let normalized_username = normalize_username(&login_identifier);
+    let subject_hash = auth::sha256_hex(&format!(
+        "{}:{}:{}",
+        normalized_email, normalized_phone, normalized_username
+    ));
+    enforce_lockout(&state.pool, "login", &subject_hash).await?;
 
     let row = sqlx::query(
         r#"
+        with matched_account as (
+            select a.id as account_id, 'email' as login_identifier_type
+            from iam.account_email ae
+            join iam.account a on a.id = ae.account_id
+            where ae.normalized_email = $1
+              and ae.deleted_at is null
+              and ae.is_login_enabled = true
+
+            union all
+
+            select a.id as account_id, 'phone' as login_identifier_type
+            from iam.account_phone ap
+            join iam.account a on a.id = ap.account_id
+            where ap.e164_phone_number = $2
+              and ap.deleted_at is null
+              and ap.is_login_enabled = true
+
+            union all
+
+            select a.id as account_id, 'username' as login_identifier_type
+            from iam.account a
+            where a.public_handle is not null
+              and lower(a.public_handle) = $3
+        )
         select
             a.id as account_id,
             a.status_code,
+            ma.login_identifier_type,
             ae.id as email_id,
             ae.verification_status,
             pc.password_hash,
             pc.password_version,
             pc.must_rotate
-        from iam.account_email ae
-        join iam.account a on a.id = ae.account_id
+        from matched_account ma
+        join iam.account a on a.id = ma.account_id
+        left join iam.account_email ae
+            on ae.account_id = a.id
+           and ae.is_primary_for_account = true
+           and ae.deleted_at is null
         join auth.authenticator au on au.account_id = a.id and au.authenticator_type = 'PASSWORD' and au.revoked_at is null
         join auth.password_credential pc on pc.authenticator_id = au.id
-        where ae.normalized_email = $1
-          and ae.deleted_at is null
-          and ae.is_login_enabled = true
+        order by case ma.login_identifier_type
+            when 'email' then 1
+            when 'phone' then 2
+            else 3
+        end
         limit 1
         "#,
     )
     .bind(&normalized_email)
+    .bind(&normalized_phone)
+    .bind(&normalized_username)
     .fetch_optional(&state.pool)
     .await?;
 
     let Some(row) = row else {
-        register_login_failure(&state.pool, "email", &subject_hash).await?;
-        return Err(AppError::unauthorized("email or password is invalid"));
+        register_login_failure(&state.pool, "login", &subject_hash).await?;
+        return Err(AppError::unauthorized("login or password is invalid"));
     };
 
     let account_id: Uuid = row.try_get("account_id")?;
     let password_hash: String = row.try_get("password_hash")?;
     let status_code: String = row.try_get("status_code")?;
+    let login_identifier_type: String = row.try_get("login_identifier_type")?;
 
     enforce_account_access(&state.pool, account_id, &status_code).await?;
 
     if !auth::verify_password(&request.password, &password_hash)? {
-        register_login_failure(&state.pool, "email", &subject_hash).await?;
+        register_login_failure(&state.pool, "login", &subject_hash).await?;
         shared::record_security_event(
             &state.pool,
             Some(account_id),
@@ -164,14 +451,14 @@ pub async fn login(
             context.ip_address.as_deref(),
             context.user_agent.as_deref(),
             None,
-            json!({"normalizedEmail": normalized_email}),
+            json!({"loginIdentifierType": login_identifier_type}),
             Some(&context.request_id),
         )
         .await?;
-        return Err(AppError::unauthorized("email or password is invalid"));
+        return Err(AppError::unauthorized("login or password is invalid"));
     }
 
-    clear_lockout_failures(&state.pool, "email", &subject_hash).await?;
+    clear_lockout_failures(&state.pool, "login", &subject_hash).await?;
 
     let security = shared::load_security_summary(&state.pool, account_id).await?;
     if security.totp_enabled {
@@ -219,6 +506,80 @@ pub async fn login(
     .await?;
 
     Ok(LoginOutcome::Session(session))
+}
+
+fn resolve_login_identifier(request: &LoginRequest) -> AppResult<String> {
+    let identifier = request
+        .login
+        .as_deref()
+        .or(request.username.as_deref())
+        .or(request.email.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::validation("login, username, or email is required"))?;
+
+    Ok(identifier.to_string())
+}
+
+async fn load_registration_invite_for_request(
+    pool: &PgPool,
+    request: &RegisterRequest,
+) -> AppResult<RegistrationInviteUse> {
+    let code = request
+        .invitation_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::validation("invitationCode is required"))?;
+    let code_hash = auth::sha256_hex(code);
+
+    let row = sqlx::query(
+        r#"
+        select id, normalized_email, role_codes_json
+        from auth.registration_invite
+        where invite_code_hash = $1
+          and status = 'active'
+          and revoked_at is null
+          and (expires_at is null or expires_at > now())
+          and use_count < max_uses
+        limit 1
+        "#,
+    )
+    .bind(code_hash)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::conflict("invitation code is invalid or expired"))?;
+
+    let id: Uuid = row.try_get("id")?;
+    let invited_email: Option<String> = row.try_get("normalized_email")?;
+    let requested_email = normalize_email(&request.email);
+    if invited_email
+        .as_deref()
+        .map(|email| email != requested_email)
+        .unwrap_or(false)
+    {
+        return Err(AppError::forbidden(
+            "invitation code is not valid for this email address",
+        ));
+    }
+
+    let role_codes_json: Value = row.try_get("role_codes_json")?;
+    let mut role_codes = role_codes_json
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if role_codes.is_empty() {
+        role_codes.push("user".to_string());
+    }
+
+    Ok(RegistrationInviteUse { id, role_codes })
 }
 
 pub async fn refresh_session(
@@ -353,13 +714,12 @@ pub async fn change_password(
     context: &RequestContext,
     request: PasswordChangeRequest,
 ) -> AppResult<Acknowledgement> {
-    let minimum_length =
-        shared::get_global_setting_i64(&state.pool, "auth.password.min_length").await?;
-    if request.new_password.len() < minimum_length as usize {
-        return Err(AppError::validation(format!(
-            "newPassword must be at least {minimum_length} characters"
-        )));
-    }
+    validate_password_policy_for_account(
+        &state.pool,
+        auth_context.account_id,
+        &request.new_password,
+    )
+    .await?;
 
     let row = sqlx::query(
         r#"
@@ -611,14 +971,6 @@ pub async fn complete_password_reset(
     context: &RequestContext,
     request: PasswordResetRequest,
 ) -> AppResult<()> {
-    let minimum_length =
-        shared::get_global_setting_i64(&state.pool, "auth.password.min_length").await?;
-    if request.new_password.len() < minimum_length as usize {
-        return Err(AppError::validation(format!(
-            "newPassword must be at least {minimum_length} characters"
-        )));
-    }
-
     let token_hash = auth::sha256_hex(&request.reset_token);
     let row = sqlx::query(
         r#"
@@ -648,6 +1000,8 @@ pub async fn complete_password_reset(
     let issued_version: i32 = row.try_get("password_version_at_issue")?;
     let current_version: i32 = row.try_get("password_version")?;
     let authenticator_id: Uuid = row.try_get("authenticator_id")?;
+
+    validate_password_policy_for_account(&state.pool, account_id, &request.new_password).await?;
 
     if issued_version != current_version {
         return Err(AppError::conflict("password reset token is stale"));
@@ -1130,6 +1484,7 @@ pub async fn create_local_account(
     role_codes: Vec<String>,
     created_by_account_id: Option<Uuid>,
     requested_status: Option<String>,
+    registration_invite_id: Option<Uuid>,
     require_password_change: bool,
 ) -> AppResult<CreatedAccount> {
     if created_by_account_id.is_none() && request.accepted_legal_documents.is_empty() {
@@ -1138,21 +1493,26 @@ pub async fn create_local_account(
         ));
     }
 
-    let password_min_length =
-        shared::get_global_setting_i64(pool, "auth.password.min_length").await?;
-    if request.password.len() < password_min_length as usize {
-        return Err(AppError::validation(format!(
-            "password must be at least {password_min_length} characters"
-        )));
-    }
-
     let account_id = Uuid::new_v4();
     let primary_email_id = Uuid::new_v4();
     let normalized_email = normalize_email(&request.email);
+    let username = request
+        .username
+        .as_deref()
+        .map(validate_username)
+        .transpose()?;
     let normalized_phone = request
         .primary_phone
         .as_ref()
-        .map(|value| value.trim().to_string());
+        .map(|value| normalize_phone_number(value));
+
+    let policy = load_password_policy(pool).await?;
+    enforce_password_policy(
+        &policy,
+        &request.password,
+        username.as_deref(),
+        &[request.email.clone()],
+    )?;
 
     let existing = sqlx::query_scalar::<_, bool>(
         r#"
@@ -1174,6 +1534,50 @@ pub async fn create_local_account(
         ));
     }
 
+    if let Some(username) = username.as_ref() {
+        let username_exists = sqlx::query_scalar::<_, bool>(
+            r#"
+            select exists (
+                select 1
+                from iam.account
+                where public_handle is not null
+                  and lower(public_handle) = $1
+                  and deleted_at is null
+            )
+            "#,
+        )
+        .bind(username)
+        .fetch_one(pool)
+        .await?;
+
+        if username_exists {
+            return Err(AppError::conflict("username is already in use"));
+        }
+    }
+
+    if let Some(primary_phone) = normalized_phone.as_ref() {
+        let phone_exists = sqlx::query_scalar::<_, bool>(
+            r#"
+            select exists (
+                select 1
+                from iam.account_phone
+                where e164_phone_number = $1
+                  and deleted_at is null
+                  and is_login_enabled = true
+            )
+            "#,
+        )
+        .bind(primary_phone)
+        .fetch_one(pool)
+        .await?;
+
+        if phone_exists {
+            return Err(AppError::conflict(
+                "an account already exists for that phone number",
+            ));
+        }
+    }
+
     enforce_email_domain_rules(pool, &normalized_email).await?;
 
     let password = auth::hash_password(&request.password)?;
@@ -1185,11 +1589,12 @@ pub async fn create_local_account(
     let mut tx = pool.begin().await?;
     sqlx::query(
         r#"
-        insert into iam.account (id, status_code, created_by_account_id, activated_at, created_at, updated_at)
-        values ($1, $2, $3, case when $2 = 'active' then now() else null end, now(), now())
+        insert into iam.account (id, public_handle, status_code, created_by_account_id, activated_at, created_at, updated_at)
+        values ($1, $2, $3, $4, case when $3 = 'active' then now() else null end, now(), now())
         "#,
     )
     .bind(account_id)
+    .bind(username.as_deref())
     .bind(&status_code)
     .bind(created_by_account_id)
     .execute(&mut *tx)
@@ -1229,9 +1634,9 @@ pub async fn create_local_account(
             r#"
             insert into iam.account_phone (
                 id, account_id, e164_phone_number, label, is_sms_enabled, is_primary_for_account,
-                verification_status, created_at, updated_at
+                is_login_enabled, verification_status, created_at, updated_at
             )
-            values ($1, $2, $3, 'primary', false, true, 'pending', now(), now())
+            values ($1, $2, $3, 'primary', false, true, true, 'pending', now(), now())
             "#,
         )
         .bind(Uuid::new_v4())
@@ -1310,6 +1715,37 @@ pub async fn create_local_account(
         .await?;
     }
 
+    if let Some(invite_id) = registration_invite_id {
+        let affected = sqlx::query(
+            r#"
+            update auth.registration_invite
+            set use_count = use_count + 1,
+                last_used_at = now(),
+                consumed_at = case
+                    when use_count + 1 >= max_uses then now()
+                    else consumed_at
+                end,
+                status = case
+                    when use_count + 1 >= max_uses then 'consumed'
+                    else status
+                end
+            where id = $1
+              and status = 'active'
+              and revoked_at is null
+              and (expires_at is null or expires_at > now())
+              and use_count < max_uses
+            "#,
+        )
+        .bind(invite_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        if affected == 0 {
+            return Err(AppError::conflict("invitation code is no longer valid"));
+        }
+    }
+
     if require_mfa_enrollment {
         sqlx::query(
             r#"
@@ -1386,7 +1822,9 @@ pub async fn create_local_account(
         Some("Account created.".to_string()),
         json!({
             "bootstrap": created_by_account_id.is_none(),
-            "mfaEnrollmentRequired": require_mfa_enrollment
+            "mfaEnrollmentRequired": require_mfa_enrollment,
+            "registrationInviteId": registration_invite_id,
+            "username": username
         }),
         Some(&context.request_id),
     )

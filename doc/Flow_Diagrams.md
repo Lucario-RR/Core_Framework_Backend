@@ -12,7 +12,7 @@ The backend uses `axum`, `sqlx`, PostgreSQL, JWT access tokens, refresh cookies,
 ## How To Read These Diagrams
 
 - Public API routes are mounted under `/api/v1`.
-- `GET /health` lives at the service root.
+- `GET /api/v1/health` lives inside the versioned public API.
 - `/internal/uploads/*` and `/internal/files/*` are signed local transfer helpers, not stable public API routes.
 - Most responses use `ApiEnvelope<T>` with `data` and `meta.requestId`.
 - Error responses use `ErrorEnvelope` with `error.code`, `error.message`, `error.urgencyLevel`, and `error.requestId`.
@@ -70,16 +70,16 @@ C4Component
         Component(router, "build_router", "src/lib.rs", "Mounts route groups, middleware, CORS, cookies, tracing.")
         Component(request_context, "Request context middleware", "src/request_context.rs", "Adds request ID, IP, and user agent to request extensions and response headers.")
         Component(auth_guard, "Auth helpers", "src/auth.rs", "JWT, cookies, CSRF, password hashing, TOTP, signed URLs, auth context.")
-        Component(auth_routes, "Auth routes", "src/api/auth_routes.rs", "Registration, login, refresh, logout, password, email verification, MFA, passkey login.")
+        Component(auth_routes, "Auth routes", "src/api/auth_routes.rs", "Registration, invitation use, multi-key login, password policy, email verification, MFA, passkey login.")
         Component(user_routes, "User routes", "src/api/users.rs", "Profile, sessions, security, passkeys, TOTP, emails, phones.")
         Component(file_routes, "File routes", "src/api/files.rs + src/api/internal.rs", "Signed private upload/download flow.")
         Component(privacy_routes, "Privacy routes", "src/api/privacy.rs", "Legal documents, consent, privacy requests, cookies.")
-        Component(admin_routes, "Admin routes", "src/api/admin.rs", "Admin overview, users, roles, settings, security, audit.")
-        Component(auth_service, "Auth service", "src/services/auth.rs", "Account creation, sessions, password reset/change, email links, MFA, passkey login.")
+        Component(admin_routes, "Admin routes", "src/api/admin.rs", "Admin overview, users, invitations, password policy, roles, settings, security, audit.")
+        Component(auth_service, "Auth service", "src/services/auth.rs", "Account creation, invitation consumption, sessions, password policy enforcement, MFA, passkey login.")
         Component(user_service, "User service", "src/services/user.rs", "Self-service profile/security/contact operations.")
         Component(file_service, "File service", "src/services/files.rs", "Upload intents, local upload validation, download URLs.")
         Component(privacy_service, "Privacy service", "src/services/privacy.rs", "Consent, cookie preferences, legal documents, data subject requests.")
-        Component(admin_service, "Admin service", "src/services/admin.rs", "Admin user/settings/status operations.")
+        Component(admin_service, "Admin service", "src/services/admin.rs", "Admin user/settings/status, generated account text, invitations, password-policy operations.")
         Component(shared_service, "Shared service", "src/services/shared.rs", "Reusable loaders, settings, audit, security events, notifications, lists.")
     }
     ContainerDb(db, "PostgreSQL", "iam/auth/ops/privacy/file schemas")
@@ -270,13 +270,14 @@ flowchart TD
 
 | Area | Route | Handler | Service entry point |
 | --- | --- | --- | --- |
-| Health | `GET /health` | `api::health` | direct acknowledgement |
+| Health | `GET /api/v1/health` | `api::health` | direct acknowledgement |
 | Auth | `POST /api/v1/auth/register` | `auth_routes::register` | `services::auth::register` |
 | Auth | `POST /api/v1/auth/register-admin` | `auth_routes::register_admin` | `services::auth::register_admin_bootstrap` |
 | Auth | `POST /api/v1/auth/login` | `auth_routes::login` | `services::auth::login` |
 | Auth | `POST /api/v1/auth/refresh` | `auth_routes::refresh` | `services::auth::refresh_session` |
 | Auth | `POST /api/v1/auth/logout` | `auth_routes::logout` | `services::auth::logout` |
 | Auth | `POST /api/v1/auth/password/change` | `auth_routes::change_password` | `services::auth::change_password` |
+| Auth | `GET /api/v1/auth/password/policy` | `auth_routes::get_password_policy` | `services::auth::load_password_policy` |
 | Auth | `POST /api/v1/auth/password/forgot` | `auth_routes::start_password_reset` | `services::auth::start_password_reset` |
 | Auth | `POST /api/v1/auth/password/reset` | `auth_routes::complete_password_reset` | `services::auth::complete_password_reset` |
 | Auth | `POST /api/v1/auth/email/verify` | `auth_routes::verify_email_challenge` | `services::auth::verify_email_challenge` |
@@ -331,6 +332,9 @@ flowchart TD
 | Privacy | `PUT /api/v1/privacy/cookie-preferences` | `privacy::set_cookie_preferences` | `services::privacy::set_cookie_preferences` |
 | Admin | `GET /api/v1/admin/roles` | `admin::list_roles` | `services::admin::list_roles` |
 | Admin | `GET /api/v1/admin/overview` | `admin::get_admin_overview` | `services::admin::admin_overview` |
+| Admin | `POST /api/v1/admin/invitations` | `admin::create_admin_invitations` | `services::admin::create_admin_invitations` |
+| Admin | `GET /api/v1/admin/password-policy` | `admin::get_admin_password_policy` | `services::admin::get_password_policy` |
+| Admin | `PATCH /api/v1/admin/password-policy` | `admin::update_admin_password_policy` | `services::admin::update_password_policy` |
 | Admin | `GET /api/v1/admin/audit-logs` | `admin::list_audit_logs` | `services::admin::list_audit_logs` |
 | Admin | `GET /api/v1/admin/security/events` | `admin::list_security_events` | `services::admin::list_security_events` |
 | Admin | `GET /api/v1/admin/users` | `admin::list_admin_users` | `services::admin::list_admin_users` |
@@ -361,16 +365,16 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant N as Notification queue
 
-    U->>FE: Enter email, password, display name, optional phone, legal acceptance
+    U->>FE: Enter username, email, password, optional phone, invitation code, legal acceptance
     FE->>API: RegisterRequest
     API->>S: request + cookies + RequestContext
-    S->>DB: Check registration.enabled and registration.invite_only
-    alt Registration disabled or invite-only
+    S->>DB: Check registration.enabled, registration.invite_only, invitation code if present
+    alt Registration disabled or invitation required/invalid
         S-->>API: FORBIDDEN
         API-->>FE: ErrorEnvelope
     else Registration allowed
-        S->>DB: create_local_account transaction
-        DB-->>S: account, profile, primary email, password credential, roles, consents
+        S->>DB: Load password policy and create_local_account transaction
+        DB-->>S: account, username, contacts, password credential, invite usage, roles, consents
         S->>N: Queue email verification link
         S->>DB: Record audit and security event
         S->>DB: Create auth.session and revoke excess sessions
@@ -383,8 +387,11 @@ sequenceDiagram
 Implementation notes:
 
 - Requires at least one accepted legal document for public self-registration.
-- Password length is read from `auth.password.min_length`.
+- Password rules are read from `auth.password.policy` and enforced server-side.
+- `invitationCode` is required when `registration.invite_only` is true; invitation roles replace the default `user` role.
 - Email is normalized and checked for duplicates, allowed domains, and blocked domains.
+- Username is stored in `iam.account.public_handle` and normalized to lowercase.
+- Login-enabled phone numbers are unique across active rows.
 - Password is stored as Argon2id hash; raw password is never persisted.
 - Primary email starts as `pending`; email verification is queued.
 - Session issue stores only refresh-token hash in `auth.session`, sets refresh and CSRF cookies, and returns a JWT access token.
@@ -407,10 +414,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Frontend posts email, password, rememberMe] --> B[Normalize email and hash lockout subject]
+    A[Frontend posts login, password, rememberMe] --> B[Normalize email, phone, and username candidates]
     B --> C{Subject locked out?}
     C -->|Yes| X[429 RATE_LIMITED]
-    C -->|No| D[Find login-enabled email and password credential]
+    C -->|No| D[Find account by login-enabled email, login-enabled phone, or username]
     D -->|Missing| E[Register failure count]
     E --> X1[401 invalid email or password]
     D -->|Found| F{Account allowed?}
@@ -487,8 +494,8 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[Frontend posts currentPassword and newPassword with Bearer token] --> B[require_auth]
-    B --> C[Check min password length setting]
-    C -->|Too short| X[400 validation]
+    B --> C[Check auth.password.policy against account username and emails]
+    C -->|Violation| X[400 validation with policy violations]
     C --> D[Load current password credential]
     D -->|Missing| X1[409 credential not enrolled]
     D --> E{currentPassword valid?}
@@ -1199,13 +1206,40 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[POST /api/v1/admin/users] --> B[admin_auth]
-    B --> C[Convert request to RegisterRequest without legal acceptance requirement]
-    C --> D[create_local_account with requested roles and admin actor]
-    D --> E{Requested status active or pending?}
-    E -->|Yes/default| F[Load admin user summary]
-    E -->|Other| G[Apply account status]
-    G --> F
-    F --> H[201 AdminUserSummary]
+    B --> C[Validate roles, username, and password policy]
+    C --> D{Password supplied?}
+    D -->|No| E[Generate compliant initial password]
+    D -->|Yes| F[Use supplied initial password]
+    E --> G[create_local_account with requested roles and admin actor]
+    F --> G
+    G --> H{Requested status active or pending?}
+    H -->|Yes/default| I[Load admin user summary]
+    H -->|Other| J[Apply account status]
+    J --> I
+    I --> K[Return user, initialPassword, accountText]
+```
+
+### Create Admin Invitations
+
+```mermaid
+flowchart TD
+    A[POST /api/v1/admin/invitations] --> B[admin_auth]
+    B --> C[Validate count, maxUses, expiry, email, and roleCodes]
+    C --> D[Generate one or more opaque invite codes]
+    D --> E[Store only invite_code_hash with role_codes_json, max_uses, expires_at]
+    E --> F[Record admin.invitation.created audit log]
+    F --> G[201 invitation codes returned once]
+```
+
+### Password Policy
+
+```mermaid
+flowchart TD
+    A[GET /api/v1/auth/password/policy] --> B[Load auth.password.policy setting]
+    B --> C[Return frontend precheck rules]
+    D[PATCH /api/v1/admin/password-policy] --> E[admin_auth]
+    E --> F[Validate and persist auth.password.policy JSON]
+    F --> G[Record admin.password_policy.updated audit log]
 ```
 
 ### Get Admin User
@@ -1224,15 +1258,16 @@ flowchart TD
 flowchart TD
     A[PATCH /api/v1/admin/users/{accountId}] --> B[admin_auth]
     B --> C[Begin transaction]
-    C --> D[Update profile fields if present]
-    D --> E[Upsert primary email/phone if present]
-    E --> F[Replace roles if roleCodes present]
-    F --> G[Set password rotation or MFA enrollment flags if present]
-    G --> H[Set login disabled or account status if present]
-    H --> I[Bump account row_version]
-    I --> J[Commit]
-    J --> K[Record admin.user.updated audit log]
-    K --> L[Return AdminUserSummary]
+    C --> D[Update username if present]
+    D --> E[Update profile fields if present]
+    E --> F[Upsert primary email/phone if present]
+    F --> G[Replace roles if roleCodes present]
+    G --> H[Set password rotation or MFA enrollment flags if present]
+    H --> I[Set login disabled or account status if present]
+    I --> J[Bump account row_version]
+    J --> K[Commit]
+    K --> L[Record admin.user.updated audit log]
+    L --> M[Return AdminUserSummary]
 ```
 
 ### List Admin User Sessions
@@ -1385,14 +1420,14 @@ flowchart TD
 flowchart TD
     A[Create local account request] --> B{Self-registration and no legal docs?}
     B -->|Yes| X[400 acceptedLegalDocuments required]
-    B -->|No| C[Check password min length]
+    B -->|No| C[Validate username and auth.password.policy]
     C --> D[Normalize email and optional phone]
-    D --> E{Email already exists?}
+    D --> E{Email, username, or login phone already exists?}
     E -->|Yes| X1[409 account already exists]
     E -->|No| F[Enforce allowed/blocked email domains]
     F --> G[Hash password]
     G --> H[Evaluate MFA enrollment policy]
-    H --> I[Transaction: account, profile, primary email, optional phone, password authenticator, status history, roles, account MFA flag, legal consents]
+    H --> I[Transaction: account, profile, contacts, password authenticator, invite use, roles, account MFA flag, legal consents]
     I --> J[Commit]
     J --> K[Queue email verification]
     K --> L[Record audit and security events]

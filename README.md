@@ -117,5 +117,8 @@ Copy `.env.example` to `.env` before running locally. The backend loads `.env` a
 - File uploads start at `/api/v1/files/uploads`, then use the returned signed local upload URL under `/internal/uploads/...`.
 - Private downloads start at `/api/v1/me/files/{fileId}/download`, which returns a short-lived signed local download URL.
 - Bootstrap admin registration is controlled by both `PUBLIC_ADMIN_BOOTSTRAP_ENABLED` and the seeded system setting `registration.bootstrap_admin_enabled`.
+- Login accepts username, email, or a login-enabled phone number. New phone-login support adds `iam.account_phone.is_login_enabled`; existing databases should only enable it for duplicate-free phone numbers.
+- Invitation registration is stored in `auth.registration_invite`; only invite code hashes are persisted, while generated codes are returned once from the admin API.
+- Frontends can read `GET /api/v1/auth/password/policy` for password prechecks; admins can update the same backend-enforced policy through `PATCH /api/v1/admin/password-policy`.
 - Browser clients must send credentialed auth requests, for example `fetch(url, { credentials: "include" })`. Calls to `/api/v1/auth/refresh` must also send `X-CSRF-Token` with the current `csrf_token` cookie value.
 - Local debug logs are written to `logs/backend-debug.log` by default. Set `LOG_DIR` to move them somewhere else.

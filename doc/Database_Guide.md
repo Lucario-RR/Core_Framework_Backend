@@ -167,7 +167,7 @@ Top-level account identity.
 | Column | Type | Null | Key | Notes |
 |---|---|---:|---|---|
 | id | UUID | No | PK | |
-| public_handle | VARCHAR(80) | Yes |  | optional public username |
+| public_handle | VARCHAR(80) | Yes |  | optional normalized username; accepted as a login identifier |
 | status_code | VARCHAR(30) | No |  | `pending`, `active`, `suspended`, `deleted` |
 | created_by_account_id | UUID | Yes | FK -> iam.account.id | null for self-registration |
 | activated_at | TIMESTAMPTZ | Yes |  | |
@@ -178,7 +178,7 @@ Top-level account identity.
 
 Recommended constraints:
 
-- unique `public_handle` when not null
+- unique `public_handle` when not null; use case-insensitive comparison in application code
 - check allowed `status_code` values
 
 Design note:
@@ -276,6 +276,7 @@ Optional multi-phone support for recovery and fallback flows.
 | account_id | UUID | No | FK -> iam.account.id | |
 | e164_phone_number | VARCHAR(20) | No |  | normalized E.164 |
 | phone_role | VARCHAR(30) | No |  | `PRIMARY`, `SECONDARY`, `BACKUP`, `RECOVERY` |
+| is_login_enabled | BOOLEAN | No |  | allows phone number to be used as a login identifier |
 | is_sms_enabled | BOOLEAN | No |  | |
 | is_primary_for_account | BOOLEAN | No |  | |
 | verification_status | VARCHAR(20) | No |  | `pending`, `verified`, `revoked` |
@@ -614,12 +615,17 @@ Optional invite-only registration control.
 |---|---|---:|---|---|
 | id | UUID | No | PK | |
 | invite_code_hash | TEXT | No |  | |
-| invited_email | VARCHAR(320) | Yes |  | |
-| invited_role_id | UUID | Yes | FK -> iam.role.id | |
-| invited_by_account_id | UUID | Yes | FK -> iam.account.id | |
-| status | VARCHAR(20) | No |  | `pending`, `used`, `expired`, `revoked` |
-| expires_at | TIMESTAMPTZ | No |  | |
-| used_at | TIMESTAMPTZ | Yes |  | |
+| email | VARCHAR(320) | Yes |  | optional original invitee email |
+| normalized_email | VARCHAR(320) | Yes |  | optional email binding for code use |
+| role_codes_json | JSONB | No |  | roles granted when the code is consumed |
+| created_by_account_id | UUID | Yes | FK -> iam.account.id | |
+| status | VARCHAR(20) | No |  | `active`, `consumed`, `expired`, `revoked` |
+| expires_at | TIMESTAMPTZ | Yes |  | null means no expiry |
+| max_uses | INTEGER | No |  | supports single-use and multi-use codes |
+| use_count | INTEGER | No |  | incremented transactionally during account creation |
+| consumed_at | TIMESTAMPTZ | Yes |  | set when `use_count` reaches `max_uses` |
+| last_used_at | TIMESTAMPTZ | Yes |  | |
+| revoked_at | TIMESTAMPTZ | Yes |  | |
 | created_at | TIMESTAMPTZ | No |  | |
 
 ### `auth.registration_approval`
@@ -681,7 +687,7 @@ Recommended settings include:
 - email verification required
 - MFA required for admins
 - MFA required for all users
-- password policy
+- password policy (`auth.password.policy`) with length, character-mix, special-character, and username/email exclusion rules
 - password history depth
 - session idle timeout
 - session absolute lifetime
@@ -1094,7 +1100,8 @@ Recommended high-value indexes:
 
 - `iam.account_email(normalized_email)` filtered to active rows
 - one active primary email per account
-- `iam.account_phone(e164_phone_number)` filtered to active rows
+- `iam.account_phone(e164_phone_number)` filtered to active login-enabled rows
+- `auth.registration_invite(invite_code_hash)` unique
 - `iam.account_status_history(account_id, changed_at desc)`
 - `iam.account_restriction(account_id, status_code, ends_at)`
 - `auth.authenticator(account_id, authenticator_type, status)`

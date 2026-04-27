@@ -12,6 +12,35 @@ pub fn normalize_email(email: &str) -> String {
     email.trim().to_ascii_lowercase()
 }
 
+pub fn normalize_username(username: &str) -> String {
+    username.trim().to_ascii_lowercase()
+}
+
+pub fn normalize_phone_number(phone: &str) -> String {
+    phone.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+pub fn validate_username(username: &str) -> AppResult<String> {
+    let normalized = normalize_username(username);
+    if normalized.len() < 3 || normalized.len() > 80 {
+        return Err(AppError::validation(
+            "username must be between 3 and 80 characters",
+        ));
+    }
+    if normalized.contains('@') {
+        return Err(AppError::validation("username cannot contain @"));
+    }
+    if !normalized
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        return Err(AppError::validation(
+            "username may contain only letters, numbers, dots, underscores, and hyphens",
+        ));
+    }
+    Ok(normalized)
+}
+
 pub fn now() -> DateTime<Utc> {
     Utc::now()
 }

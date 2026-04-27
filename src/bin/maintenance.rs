@@ -217,10 +217,12 @@ async fn create_admin(state: &AppState, args: CreateAdminArgs) -> AppResult<Crea
     };
     let legal_documents = current_legal_documents(&state.pool).await?;
     let request = RegisterRequest {
+        username: None,
         email: args.email.clone(),
         password: args.password,
         display_name: args.display_name.clone(),
         primary_phone: args.primary_phone,
+        invitation_code: None,
         accepted_legal_documents: legal_documents,
     };
 
@@ -231,6 +233,7 @@ async fn create_admin(state: &AppState, args: CreateAdminArgs) -> AppResult<Crea
         vec!["user".to_string(), "admin".to_string()],
         None,
         Some("active".to_string()),
+        None,
         args.require_password_change,
     )
     .await?;

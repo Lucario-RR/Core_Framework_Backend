@@ -47,6 +47,7 @@ pub fn build_router(state: AppState) -> Router {
         .allow_methods(AllowMethods::mirror_request());
 
     let api_router = Router::new()
+        .route("/health", get(api::health))
         .merge(auth_routes::routes())
         .merge(users::routes())
         .merge(files::routes())
@@ -54,7 +55,6 @@ pub fn build_router(state: AppState) -> Router {
         .merge(admin::routes());
 
     Router::new()
-        .route("/health", get(api::health))
         .nest("/api/v1", api_router)
         .merge(internal::routes())
         .layer(cors)

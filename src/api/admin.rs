@@ -7,9 +7,9 @@ use axum::{
 
 use crate::{
     api::contracts::{
-        AdminSystemSettingUpdateRequest, AdminUserBulkActionRequest, AdminUserCreateRequest,
-        AdminUserListQuery, AdminUserUpdateRequest, SearchPaginationQuery,
-        SessionBulkRevokeRequest,
+        AdminInvitationCreateRequest, AdminSystemSettingUpdateRequest, AdminUserBulkActionRequest,
+        AdminUserCreateRequest, AdminUserListQuery, AdminUserUpdateRequest, PasswordPolicy,
+        SearchPaginationQuery, SessionBulkRevokeRequest,
     },
     auth,
     request_context::RequestContext,
@@ -22,6 +22,11 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/admin/roles", get(list_roles))
         .route("/admin/overview", get(get_admin_overview))
+        .route("/admin/invitations", post(create_admin_invitations))
+        .route(
+            "/admin/password-policy",
+            get(get_admin_password_policy).patch(update_admin_password_policy),
+        )
         .route("/admin/audit-logs", get(list_audit_logs))
         .route("/admin/security/events", get(list_security_events))
         .route(
@@ -83,6 +88,43 @@ async fn get_admin_overview(
     let _ = admin_auth(&state, &headers).await?;
     let overview = admin_service::admin_overview(&state).await?;
     Ok(Json(envelope(&context.request_id, overview)))
+}
+
+async fn create_admin_invitations(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Json(request): Json<AdminInvitationCreateRequest>,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let auth_context = admin_auth(&state, &headers).await?;
+    let invitations =
+        admin_service::create_admin_invitations(&state, &auth_context, &context, request).await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(envelope(&context.request_id, invitations)),
+    ))
+}
+
+async fn get_admin_password_policy(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let _ = admin_auth(&state, &headers).await?;
+    let policy = admin_service::get_password_policy(&state).await?;
+    Ok(Json(envelope(&context.request_id, policy)))
+}
+
+async fn update_admin_password_policy(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Json(request): Json<PasswordPolicy>,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let auth_context = admin_auth(&state, &headers).await?;
+    let policy =
+        admin_service::update_password_policy(&state, &auth_context, &context, request).await?;
+    Ok(Json(envelope(&context.request_id, policy)))
 }
 
 async fn list_audit_logs(

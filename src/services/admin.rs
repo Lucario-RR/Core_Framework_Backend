@@ -1,17 +1,20 @@
+use chrono::{Duration, Utc};
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
     api::contracts::{
-        Acknowledgement, AdminOverview, AdminSystemSetting, AdminSystemSettingUpdateRequest,
-        AdminUserBulkActionRequest, AdminUserCreateRequest, AdminUserSummary,
-        AdminUserUpdateRequest, EmailAddress, RegisterRequest, RoleDefinition,
-        SessionBulkRevokeRequest,
+        Acknowledgement, AdminInvitationCode, AdminInvitationCreateRequest,
+        AdminInvitationCreateResponse, AdminOverview, AdminSystemSetting,
+        AdminSystemSettingUpdateRequest, AdminUserBulkActionRequest, AdminUserCreateRequest,
+        AdminUserCreateResponse, AdminUserSummary, AdminUserUpdateRequest, EmailAddress,
+        PasswordPolicy, RegisterRequest, RoleDefinition, SessionBulkRevokeRequest,
     },
-    auth::AuthContext,
+    auth::{self, AuthContext},
     error::{AppError, AppResult},
     request_context::RequestContext,
     services::{auth as auth_service, shared},
+    utils::{normalize_email, normalize_phone_number, validate_username},
     AppState,
 };
 
@@ -21,6 +24,154 @@ pub async fn list_roles(state: &AppState) -> AppResult<Vec<RoleDefinition>> {
 
 pub async fn admin_overview(state: &AppState) -> AppResult<AdminOverview> {
     shared::count_admin_overview(&state.pool, state.config.public_admin_bootstrap_enabled).await
+}
+
+pub async fn create_admin_invitations(
+    state: &AppState,
+    actor: &AuthContext,
+    context: &RequestContext,
+    request: AdminInvitationCreateRequest,
+) -> AppResult<AdminInvitationCreateResponse> {
+    if request.expires_at.is_some() && request.expires_in_seconds.is_some() {
+        return Err(AppError::validation(
+            "provide either expiresAt or expiresInSeconds, not both",
+        ));
+    }
+
+    let count = request.count.unwrap_or(1).clamp(1, 100);
+    let max_uses = request.max_uses.unwrap_or(1).clamp(1, 100_000);
+    let email = request
+        .email
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let normalized_email = email.as_deref().map(normalize_email);
+    let role_codes = request
+        .role_codes
+        .unwrap_or_else(|| vec!["user".to_string()])
+        .into_iter()
+        .map(|role| role.trim().to_ascii_lowercase())
+        .filter(|role| !role.is_empty())
+        .collect::<Vec<_>>();
+    let role_codes = if role_codes.is_empty() {
+        vec!["user".to_string()]
+    } else {
+        role_codes
+    };
+    ensure_role_codes_exist(&state.pool, &role_codes).await?;
+
+    let expires_at = match (request.expires_at, request.expires_in_seconds) {
+        (Some(value), None) => Some(value),
+        (None, Some(seconds)) if seconds > 0 => Some(Utc::now() + Duration::seconds(seconds)),
+        (None, Some(_)) => return Err(AppError::validation("expiresInSeconds must be positive")),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("validated above"),
+    };
+
+    let mut invitations = Vec::new();
+    for _ in 0..count {
+        let id = Uuid::new_v4();
+        let code = format!("inv_{}", auth::generate_token(24));
+        let created_at = Utc::now();
+
+        sqlx::query(
+            r#"
+            insert into auth.registration_invite (
+                id, email, normalized_email, invite_code_hash, status, role_codes_json,
+                expires_at, max_uses, use_count, created_by_account_id, created_at
+            )
+            values ($1, $2, $3, $4, 'active', $5, $6, $7, 0, $8, now())
+            "#,
+        )
+        .bind(id)
+        .bind(email.as_deref())
+        .bind(normalized_email.as_deref())
+        .bind(auth::sha256_hex(&code))
+        .bind(json!(&role_codes))
+        .bind(expires_at)
+        .bind(max_uses)
+        .bind(actor.account_id)
+        .execute(&state.pool)
+        .await?;
+
+        invitations.push(AdminInvitationCode {
+            id,
+            code,
+            email: email.clone(),
+            role_codes: role_codes.clone(),
+            max_uses,
+            expires_at,
+            created_at,
+        });
+    }
+
+    shared::record_audit_log(
+        &state.pool,
+        Some(actor.account_id),
+        "admin.invitation.created",
+        "registration_invite",
+        None,
+        Some("Administrator generated invitation code(s).".to_string()),
+        json!({
+            "count": count,
+            "maxUses": max_uses,
+            "roleCodes": role_codes,
+            "email": email,
+            "expiresAt": expires_at
+        }),
+        Some(&context.request_id),
+    )
+    .await?;
+
+    Ok(AdminInvitationCreateResponse { invitations })
+}
+
+pub async fn get_password_policy(state: &AppState) -> AppResult<PasswordPolicy> {
+    auth_service::load_password_policy(&state.pool).await
+}
+
+pub async fn update_password_policy(
+    state: &AppState,
+    actor: &AuthContext,
+    context: &RequestContext,
+    mut policy: PasswordPolicy,
+) -> AppResult<PasswordPolicy> {
+    if policy.min_length < 1 {
+        return Err(AppError::validation("minLength must be at least 1"));
+    }
+    if policy.require_uppercase || policy.require_lowercase {
+        policy.require_letter = true;
+    }
+
+    let setting = shared::load_system_setting(&state.pool, "auth.password.policy").await?;
+    sqlx::query(
+        r#"
+        update ops.system_setting
+        set value_json = $2,
+            updated_at = now(),
+            updated_by_account_id = $3
+        where id = $1
+        "#,
+    )
+    .bind(setting.id)
+    .bind(json!(&policy))
+    .bind(actor.account_id)
+    .execute(&state.pool)
+    .await?;
+
+    shared::record_audit_log(
+        &state.pool,
+        Some(actor.account_id),
+        "admin.password_policy.updated",
+        "system_setting",
+        Some(setting.id),
+        Some("Administrator updated the password policy.".to_string()),
+        json!({ "policy": &policy }),
+        Some(&context.request_id),
+    )
+    .await?;
+
+    auth_service::load_password_policy(&state.pool).await
 }
 
 pub async fn list_audit_logs(
@@ -57,18 +208,24 @@ pub async fn list_admin_users(
 
     let account_ids = sqlx::query_scalar::<_, Uuid>(
         r#"
-        select distinct a.id
-        from iam.account a
-        join iam.account_profile p on p.account_id = a.id
-        left join iam.account_email ae on ae.account_id = a.id and ae.is_primary_for_account = true and ae.deleted_at is null
-        left join iam.account_role ar on ar.account_id = a.id
-        left join iam.role r on r.id = ar.role_id
-        where ($1::text is null
-               or lower(coalesce(p.display_name, '')) ilike $1
-               or lower(coalesce(ae.email, '')) ilike $1
-               or cast(a.id as text) ilike $1)
-          and ($2::text is null or r.code = $2)
-        order by a.created_at desc
+        select id
+        from (
+            select distinct a.id, a.created_at
+            from iam.account a
+            join iam.account_profile p on p.account_id = a.id
+            left join iam.account_email ae on ae.account_id = a.id and ae.is_primary_for_account = true and ae.deleted_at is null
+            left join iam.account_phone ap on ap.account_id = a.id and ap.is_primary_for_account = true and ap.deleted_at is null
+            left join iam.account_role ar on ar.account_id = a.id
+            left join iam.role r on r.id = ar.role_id
+            where ($1::text is null
+                   or lower(coalesce(p.display_name, '')) ilike $1
+                   or lower(coalesce(a.public_handle, '')) ilike $1
+                   or lower(coalesce(ae.email, '')) ilike $1
+                   or lower(coalesce(ap.e164_phone_number, '')) ilike $1
+                   or cast(a.id as text) ilike $1)
+              and ($2::text is null or r.code = $2)
+        ) account_matches
+        order by created_at desc
         limit 500
         "#,
     )
@@ -105,18 +262,46 @@ pub async fn create_admin_user(
     actor: &AuthContext,
     context: &RequestContext,
     request: AdminUserCreateRequest,
-) -> AppResult<AdminUserSummary> {
+) -> AppResult<AdminUserCreateResponse> {
+    let username = request
+        .username
+        .as_deref()
+        .map(validate_username)
+        .transpose()?;
+    let initial_password = match request.password {
+        Some(password) if !password.trim().is_empty() => password,
+        _ => {
+            auth_service::generate_initial_password(
+                &state.pool,
+                username.as_deref(),
+                &request.email,
+            )
+            .await?
+        }
+    };
     let requested_status = request.account_status.clone();
     let register_request = RegisterRequest {
+        username: username.clone(),
         email: request.email,
-        password: request.password,
+        password: initial_password.clone(),
         display_name: request.display_name,
         primary_phone: request.primary_phone,
+        invitation_code: None,
         accepted_legal_documents: Vec::new(),
     };
     let role_codes = request
         .role_codes
-        .unwrap_or_else(|| vec!["user".to_string()]);
+        .unwrap_or_else(|| vec!["user".to_string()])
+        .into_iter()
+        .map(|role| role.trim().to_ascii_lowercase())
+        .filter(|role| !role.is_empty())
+        .collect::<Vec<_>>();
+    let role_codes = if role_codes.is_empty() {
+        vec!["user".to_string()]
+    } else {
+        role_codes
+    };
+    ensure_role_codes_exist(&state.pool, &role_codes).await?;
     let initial_status = match requested_status.as_deref() {
         Some("pending") => Some("pending".to_string()),
         _ => Some("active".to_string()),
@@ -128,6 +313,7 @@ pub async fn create_admin_user(
         role_codes,
         Some(actor.account_id),
         initial_status,
+        None,
         false,
     )
     .await?;
@@ -147,7 +333,12 @@ pub async fn create_admin_user(
         }
     }
 
-    shared::load_admin_user_summary(&state.pool, created.account_id).await
+    let user = shared::load_admin_user_summary(&state.pool, created.account_id).await?;
+    Ok(AdminUserCreateResponse {
+        account_text: build_account_text(&user, &initial_password),
+        initial_password,
+        user,
+    })
 }
 
 pub async fn get_admin_user(state: &AppState, account_id: Uuid) -> AppResult<AdminUserSummary> {
@@ -162,6 +353,23 @@ pub async fn update_admin_user(
     request: AdminUserUpdateRequest,
 ) -> AppResult<AdminUserSummary> {
     let mut tx = state.pool.begin().await?;
+
+    if let Some(username) = request.username.as_ref() {
+        let normalized = validate_username(username)?;
+        ensure_username_available(&state.pool, account_id, &normalized).await?;
+        sqlx::query(
+            r#"
+            update iam.account
+            set public_handle = $2,
+                updated_at = now()
+            where id = $1
+            "#,
+        )
+        .bind(account_id)
+        .bind(normalized)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     if request.display_name.is_some()
         || request.default_currency.is_some()
@@ -200,11 +408,17 @@ pub async fn update_admin_user(
     }
 
     if let Some(role_codes) = request.role_codes.as_ref() {
+        let role_codes = role_codes
+            .iter()
+            .map(|role| role.trim().to_ascii_lowercase())
+            .filter(|role| !role.is_empty())
+            .collect::<Vec<_>>();
+        ensure_role_codes_exist(&state.pool, &role_codes).await?;
         sqlx::query("delete from iam.account_role where account_id = $1")
             .bind(account_id)
             .execute(&mut *tx)
             .await?;
-        for role_code in role_codes {
+        for role_code in &role_codes {
             sqlx::query(
                 r#"
                 insert into iam.account_role (account_id, role_id, granted_by_account_id, granted_at)
@@ -597,6 +811,86 @@ pub async fn update_system_setting(
     shared::load_system_setting(&state.pool, setting_key).await
 }
 
+async fn ensure_role_codes_exist(pool: &sqlx::PgPool, role_codes: &[String]) -> AppResult<()> {
+    let requested = role_codes
+        .iter()
+        .map(|role| role.trim().to_ascii_lowercase())
+        .filter(|role| !role.is_empty())
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return Err(AppError::validation("at least one role code is required"));
+    }
+
+    let existing = sqlx::query_scalar::<_, String>(
+        r#"
+        select code
+        from iam.role
+        where code = any($1::text[])
+        "#,
+    )
+    .bind(requested.clone())
+    .fetch_all(pool)
+    .await?;
+
+    let missing = requested
+        .into_iter()
+        .filter(|role| !existing.iter().any(|candidate| candidate == role))
+        .collect::<Vec<_>>();
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::validation("one or more role codes are invalid")
+            .with_details(json!({ "missingRoleCodes": missing })))
+    }
+}
+
+async fn ensure_username_available(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    username: &str,
+) -> AppResult<()> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        r#"
+        select exists (
+            select 1
+            from iam.account
+            where public_handle is not null
+              and lower(public_handle) = $1
+              and id <> $2
+              and deleted_at is null
+        )
+        "#,
+    )
+    .bind(username)
+    .bind(account_id)
+    .fetch_one(pool)
+    .await?;
+
+    if exists {
+        Err(AppError::conflict("username is already in use"))
+    } else {
+        Ok(())
+    }
+}
+
+fn build_account_text(user: &AdminUserSummary, initial_password: &str) -> String {
+    let mut lines = vec![
+        "Account details".to_string(),
+        format!("Name: {}", user.display_name),
+    ];
+    if let Some(username) = user.username.as_ref() {
+        lines.push(format!("Username: {username}"));
+    }
+    lines.push(format!("Email: {}", user.primary_email));
+    if let Some(phone) = user.primary_phone.as_ref() {
+        lines.push(format!("Phone: {phone}"));
+    }
+    lines.push(format!("Password: {initial_password}"));
+    lines.push(format!("Roles: {}", user.roles.join(", ")));
+    lines.join("\n")
+}
+
 async fn upsert_admin_primary_email(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     account_id: Uuid,
@@ -662,6 +956,7 @@ async fn upsert_admin_primary_phone(
     account_id: Uuid,
     phone: &str,
 ) -> AppResult<()> {
+    let normalized_phone = normalize_phone_number(phone);
     sqlx::query("update iam.account_phone set is_primary_for_account = false where account_id = $1 and deleted_at is null")
         .bind(account_id)
         .execute(&mut **tx)
@@ -676,7 +971,7 @@ async fn upsert_admin_primary_phone(
         "#,
     )
     .bind(account_id)
-    .bind(phone.trim())
+    .bind(&normalized_phone)
     .fetch_optional(&mut **tx)
     .await?;
 
@@ -685,6 +980,7 @@ async fn upsert_admin_primary_phone(
             r#"
             update iam.account_phone
             set is_primary_for_account = true,
+                is_login_enabled = true,
                 verification_status = 'verified',
                 verified_at = now(),
                 updated_at = now()
@@ -698,14 +994,15 @@ async fn upsert_admin_primary_phone(
         sqlx::query(
             r#"
             insert into iam.account_phone (
-                id, account_id, e164_phone_number, label, is_sms_enabled, is_primary_for_account, verification_status, verified_at, created_at, updated_at
+                id, account_id, e164_phone_number, label, is_sms_enabled, is_primary_for_account,
+                is_login_enabled, verification_status, verified_at, created_at, updated_at
             )
-            values ($1, $2, $3, 'primary', false, true, 'verified', now(), now(), now())
+            values ($1, $2, $3, 'primary', false, true, true, 'verified', now(), now(), now())
             "#,
         )
         .bind(Uuid::new_v4())
         .bind(account_id)
-        .bind(phone.trim())
+        .bind(normalized_phone)
         .execute(&mut **tx)
         .await?;
     }

@@ -2,7 +2,7 @@ use axum::{
     extract::{Extension, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use tower_cookies::Cookies;
@@ -29,6 +29,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
         .route("/auth/password/change", post(change_password))
+        .route("/auth/password/policy", get(get_password_policy))
         .route("/auth/password/forgot", post(start_password_reset))
         .route("/auth/password/reset", post(complete_password_reset))
         .route("/auth/email/verify", post(verify_email_challenge))
@@ -122,6 +123,14 @@ async fn change_password(
     let acknowledgement =
         auth_service::change_password(&state, &auth_context, &context, request).await?;
     Ok(Json(envelope(&context.request_id, acknowledgement)))
+}
+
+async fn get_password_policy(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+) -> crate::error::AppResult<impl IntoResponse> {
+    let policy = auth_service::load_password_policy(&state.pool).await?;
+    Ok(Json(envelope(&context.request_id, policy)))
 }
 
 async fn start_password_reset(

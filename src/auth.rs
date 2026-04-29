@@ -62,11 +62,23 @@ impl AuthContext {
         self.roles.iter().any(|candidate| candidate == role)
     }
 
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|candidate| candidate == scope)
+    }
+
     pub fn require_admin(&self) -> AppResult<()> {
         if self.has_role("admin") {
             Ok(())
         } else {
             Err(AppError::forbidden("administrator access is required"))
+        }
+    }
+
+    pub fn require_admin_scope(&self, scope: &str) -> AppResult<()> {
+        if self.has_role("admin") || self.has_scope(scope) {
+            Ok(())
+        } else {
+            Err(AppError::forbidden("required admin permission is missing"))
         }
     }
 }
@@ -230,11 +242,13 @@ pub async fn require_auth(state: &AppState, headers: &HeaderMap) -> AppResult<Au
         return Err(AppError::unauthorized("session is no longer valid"));
     }
 
+    let (roles, scopes) = load_session_roles_and_scopes(&state.pool, claims.sub).await?;
+
     Ok(AuthContext {
         account_id: claims.sub,
         session_id: claims.sid,
-        roles: claims.roles,
-        scopes: claims.scopes,
+        roles,
+        scopes,
     })
 }
 

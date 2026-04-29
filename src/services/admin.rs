@@ -333,6 +333,11 @@ pub async fn create_admin_invitations(
         invitations.push(AdminInvitationCode {
             id,
             code,
+            code_source: if provided_code.is_some() {
+                "provided".to_string()
+            } else {
+                "generated".to_string()
+            },
             email: email.clone(),
             role_codes: role_codes.clone(),
             max_uses,
@@ -643,10 +648,19 @@ pub async fn create_admin_user(
         .map(|assignment| assignment.role_code.clone())
         .collect::<Vec<_>>();
     ensure_role_codes_exist(&state.pool, &role_codes).await?;
-    let initial_status = match requested_status.as_deref() {
+    let normalized_requested_status = requested_status
+        .as_deref()
+        .map(|status| status.trim().to_ascii_lowercase());
+    let initial_status = match normalized_requested_status.as_deref() {
+        None => Some("awaiting_setup".to_string()),
+        Some("awaiting") | Some("awaiting_setup") => Some("awaiting_setup".to_string()),
+        Some("active") => Some("active".to_string()),
         Some("pending") => Some("pending".to_string()),
         _ => Some("active".to_string()),
     };
+    let require_password_change = request
+        .require_password_change
+        .unwrap_or_else(|| normalized_requested_status.as_deref() != Some("active"));
     let created = auth_service::create_local_account(
         &state.pool,
         context,
@@ -655,7 +669,7 @@ pub async fn create_admin_user(
         Some(actor.account_id),
         initial_status,
         None,
-        false,
+        require_password_change,
     )
     .await?;
 
@@ -667,8 +681,8 @@ pub async fn create_admin_user(
     )
     .await?;
 
-    if let Some(status) = requested_status.as_deref() {
-        if status != "active" && status != "pending" {
+    if let Some(status) = normalized_requested_status.as_deref() {
+        if !matches!(status, "active" | "pending" | "awaiting" | "awaiting_setup") {
             let mut tx = state.pool.begin().await?;
             apply_account_status(
                 &mut tx,
@@ -1679,13 +1693,20 @@ pub(crate) async fn apply_account_status(
     status: &str,
     reason: Option<String>,
 ) -> AppResult<()> {
+    let status = if status == "awaiting" {
+        "awaiting_setup"
+    } else {
+        status
+    };
+
     match status {
-        "active" | "pending" => {
+        "active" | "pending" | "awaiting_setup" => {
             sqlx::query(
                 r#"
                 update iam.account
                 set status_code = $2,
                     deleted_at = null,
+                    activated_at = case when $2 = 'active' then coalesce(activated_at, now()) else activated_at end,
                     updated_at = now()
                 where id = $1
                 "#,

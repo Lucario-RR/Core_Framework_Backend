@@ -169,7 +169,7 @@ Top-level account identity.
 | id | UUID | No | PK | |
 | public_handle | VARCHAR(80) | No |  | normalized unique username; accepted as a login identifier |
 | username_changed_at | TIMESTAMPTZ | Yes |  | last explicit username change, used by the username cooldown policy |
-| status_code | VARCHAR(30) | No |  | `pending`, `active`, `suspended`, `deleted` |
+| status_code | VARCHAR(30) | No |  | stored lifecycle state such as `pending`, `awaiting_setup`, `active`, `deleted` |
 | created_by_account_id | UUID | Yes | FK -> iam.account.id | null for self-registration |
 | activated_at | TIMESTAMPTZ | Yes |  | |
 | last_login_at | TIMESTAMPTZ | Yes |  | |
@@ -1062,6 +1062,7 @@ This module is optional, but it is the cleanest way to support avatars, export b
 The scope lists these recommended states:
 
 - `pending`
+- `awaiting_setup`
 - `active`
 - `email_unverified`
 - `password_reset_required`
@@ -1074,8 +1075,9 @@ For robustness, do not store all of them as one overloaded enum. Represent them 
 | Effective state | How to derive it |
 |---|---|
 | `pending` | `iam.account.status_code = 'pending'` |
+| `awaiting_setup` | `iam.account.status_code = 'awaiting_setup'`; login is allowed so the frontend can route the user to setup |
 | `active` | `iam.account.status_code = 'active'` and no active blocking restriction |
-| `email_unverified` | active or pending account whose primary login email is not verified |
+| `email_unverified` | active account whose primary login email is not verified |
 | `password_reset_required` | active account whose `auth.password_credential.must_rotate = true` |
 | `suspended` | active `iam.account_restriction` row with `restriction_type = 'suspend'` |
 | `frozen` | active `iam.account_restriction` row with `restriction_type = 'freeze'` |
@@ -1089,14 +1091,14 @@ This section maps the feature scope directly to the schema so the design covers 
 
 | Scope area | Functions covered | Main tables |
 |---|---|---|
-| Account lifecycle | register, activate, login, logout, refresh, deactivate, freeze, restore, soft delete, self-service deletion request, admin-created account, forced password reset, forced re-verification, anonymous draft, invite-only, staged approval | `iam.account`, `iam.account_status_history`, `iam.account_restriction`, `auth.password_credential`, `auth.session`, `auth.email_verification_challenge`, `privacy.data_subject_request`, `auth.registration_draft`, `auth.registration_invite`, `auth.registration_approval` |
+| Account lifecycle | register, activate, login, logout, refresh, deactivate, freeze, restore, soft delete, self-service deletion request, admin-created awaiting-setup account, forced password reset, forced re-verification, anonymous draft, invite-only, staged approval | `iam.account`, `iam.account_status_history`, `iam.account_restriction`, `auth.password_credential`, `auth.session`, `auth.email_verification_challenge`, `privacy.data_subject_request`, `auth.registration_draft`, `auth.registration_invite`, `auth.registration_approval` |
 | Identity and contact | primary email, email verification, change email, normalized lookup, unique email rules, multiple emails, backup email, login-enabled flags, resend verification, dual-confirm email change, phone, locale, timezone, display name, avatar | `iam.account_email`, `auth.email_verification_challenge`, `auth.account_email_change_request`, `iam.account_phone`, `auth.phone_verification_challenge`, `iam.account_profile`, `file.file_asset` |
 | Password and credentials | password registration, change, forgot/reset, token flow, Argon2id, per-password salt, complexity rules, password history, breach flag, expiry/rotation policy, credential enrollment audit, passkeys, external identity providers, passwordless | `auth.authenticator`, `auth.password_credential`, `auth.password_history`, `auth.password_reset_challenge`, `auth.passkey_credential`, `auth.external_identity`, `ops.audit_log`, `ops.security_event`, `ops.system_setting` |
 | Authentication and session control | session creation, refresh, revoke, logout current device, logout all devices, hashed tokens, active session list, device label, user agent, IP, idle timeout, absolute lifetime, remember-me, concurrent session limit, trusted device, high-risk approval, step-up auth | `auth.session`, `auth.trusted_device`, `auth.login_challenge`, `ops.system_setting`, `ops.security_event` |
 | MFA / 2FA / recovery | TOTP, recovery codes, enable/disable 2FA, verify at login, revoke lost factor, force MFA for admins/all users/by role, backup method, suspicious recovery alert, passkey as MFA, SMS fallback | `auth.authenticator`, `auth.totp_factor`, `auth.recovery_code_set`, `auth.recovery_code`, `auth.passkey_credential`, `auth.passkey_registration_challenge`, `auth.passkey_authentication_challenge`, `auth.sms_factor`, `ops.notification`, `ops.notification_delivery`, `ops.system_setting` |
-| User self-service security | view account status, change password, change primary email, recent login activity, revoke own sessions, recovery code regeneration, see MFA methods, security notifications, suspicious login report, export/privacy requests | `iam.account`, `auth.session`, `ops.security_event`, `auth.authenticator`, `auth.recovery_code_set`, `ops.notification`, `ops.security_report`, `privacy.data_subject_request` |
-| Account restriction model | pending, active, suspended, frozen, deleted, freeze temporarily, suspend with reason, restore, require password reset, revoke sessions, disable login | `iam.account`, `iam.account_status_history`, `iam.account_restriction`, `auth.password_credential`, `auth.session`, `ops.audit_log` |
-| Admin portal | admin login, roles/permissions, custom role creation/editing, user search/filter, user detail, freeze/unfreeze, suspend/restore, soft delete/recover, force logout, reset credentials, verify email, bulk actions, assign roles with optional expiry, required reason, audit trail, security events, active sessions, impersonation, approval workflow, case notes | `iam.role`, `iam.permission`, `iam.role_permission`, `iam.account_role`, `iam.account`, `iam.account_restriction`, `auth.session`, `ops.audit_log`, `ops.security_event`, `ops.admin_impersonation_session`, `ops.admin_action_approval`, `ops.admin_case`, `ops.admin_case_note` |
+| User self-service security | view account status, complete setup, change password, change primary email, recent login/activity history, revoke own sessions, recovery code regeneration, see MFA methods, security notifications, suspicious login report, export/privacy requests | `iam.account`, `iam.account_status_history`, `auth.session`, `ops.security_event`, `auth.authenticator`, `auth.recovery_code_set`, `ops.notification`, `ops.security_report`, `privacy.data_subject_request` |
+| Account restriction model | pending, awaiting setup, active, suspended, frozen, deleted, freeze temporarily, suspend with reason, restore, require password reset, revoke sessions, disable login | `iam.account`, `iam.account_status_history`, `iam.account_restriction`, `auth.password_credential`, `auth.session`, `ops.audit_log` |
+| Admin portal | permission-scoped admin access, roles/permissions, custom role creation/editing/deletion, invitation management, user search/filter, user detail, freeze/unfreeze, suspend/restore, soft delete/recover, force logout, reset credentials, verify email, bulk actions, assign roles with optional expiry, required reason, audit trail, security events, active sessions, impersonation, approval workflow, case notes | `iam.role`, `iam.permission`, `iam.role_permission`, `iam.account_role`, `iam.account`, `iam.account_restriction`, `auth.registration_invite`, `auth.session`, `ops.audit_log`, `ops.security_event`, `ops.admin_impersonation_session`, `ops.admin_action_approval`, `ops.admin_case`, `ops.admin_case_note` |
 | System settings and policy | registration toggle, email verification required, MFA policies, password policy, lockout policy, session policy, deletion policy, allowed/blocked email domains, invite-only mode, bootstrap admin flag, passkey enablement, geo/IP risk, maintenance mode | `ops.setting_definition`, `ops.system_setting`, `ops.email_domain_rule`, `auth.registration_invite` |
 | Security monitoring and risk controls | failed login tracking, rate limiting, lockout, IP capture, request ID, suspicious event logging, admin action audit, device fingerprint, impossible travel, new-IP alert, credential stuffing detection, brute-force detection, reset abuse detection, adaptive challenge, risk scoring, TOR/proxy heuristics | `ops.security_event`, `auth.account_lockout`, `auth.login_challenge`, `auth.session`, `ops.audit_log`, `ops.notification`, `ops.outbox_event` |
 | Error handling and logging | stable codes, request correlation, safe logs, separate audit/security logs, severity levels, taxonomy, operator diagnostics, retry-safe idempotency | `ops.audit_log`, `ops.security_event`, `ops.idempotency_key` |

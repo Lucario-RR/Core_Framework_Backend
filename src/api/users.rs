@@ -24,8 +24,10 @@ use crate::{
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/me", get(get_me).patch(update_me))
+        .route("/me/setup/complete", post(complete_account_setup))
         .route("/me/avatar", post(set_avatar).delete(remove_avatar))
         .route("/me/account/deactivate", post(deactivate_own_account))
+        .route("/me/activity", get(list_own_activity))
         .route("/me/sessions", get(list_own_sessions))
         .route("/me/sessions/revoke-all", post(revoke_all_own_sessions))
         .route("/me/sessions/{session_id}", delete(revoke_own_session))
@@ -98,6 +100,16 @@ async fn update_me(
         [(header::ETAG, etag)],
         Json(envelope(&context.request_id, profile)),
     ))
+}
+
+async fn complete_account_setup(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+) -> crate::error::AppResult<impl IntoResponse> {
+    let auth_context = auth::require_auth(&state, &headers).await?;
+    let profile = user_service::complete_account_setup(&state, &auth_context, &context).await?;
+    Ok(Json(envelope(&context.request_id, profile)))
 }
 
 async fn set_avatar(
@@ -200,6 +212,23 @@ async fn list_own_security_events(
     let (offset, limit) = pagination(query)?;
     let (events, next_cursor) =
         user_service::list_own_security_events(&state, &auth_context, offset, limit).await?;
+    Ok(Json(envelope_with_cursor(
+        &context.request_id,
+        events,
+        next_cursor,
+    )))
+}
+
+async fn list_own_activity(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Query(query): Query<PaginationQuery>,
+) -> crate::error::AppResult<impl IntoResponse> {
+    let auth_context = auth::require_auth(&state, &headers).await?;
+    let (offset, limit) = pagination(query)?;
+    let (events, next_cursor) =
+        user_service::list_own_activity(&state, &auth_context, offset, limit).await?;
     Ok(Json(envelope_with_cursor(
         &context.request_id,
         events,

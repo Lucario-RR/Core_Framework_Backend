@@ -935,6 +935,12 @@ pub async fn change_password(
         Some(&context.request_id),
     )
     .await?;
+    shared::complete_account_setup_if_ready(
+        &state.pool,
+        auth_context.account_id,
+        Some(&context.request_id),
+    )
+    .await?;
 
     Ok(Acknowledgement {
         status: "ok".to_string(),

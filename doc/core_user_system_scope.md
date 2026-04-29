@@ -180,9 +180,10 @@ These functions reduce support cost and improve trust.
 Must-have:
 
 - view account status
+- complete first-login account setup
 - change password
 - change primary email
-- view recent login activity
+- view recent login and account activity
 - revoke own sessions
 
 Important:
@@ -204,6 +205,7 @@ The system should distinguish several account states instead of a single active 
 Recommended states:
 
 - `pending`
+- `awaiting_setup`
 - `active`
 - `email_unverified`
 - `password_reset_required`
@@ -229,6 +231,8 @@ Must-have:
 
 - admin login
 - admin roles and permissions
+- permission-scoped staff/admin operations
+- invitation code management
 - user search and filtering
 - view one user profile
 - freeze and unfreeze user
@@ -241,6 +245,7 @@ Must-have:
 Important:
 
 - create user or admin account
+- create awaiting-setup accounts that must rotate password and can enroll passkeys or MFA
 - bulk user actions
 - assign roles
 - change account state with required reason
@@ -547,6 +552,7 @@ Recommended route groups:
 - `/admin/security/*`
 - `/admin/settings/*`
 - `/admin/roles/*`
+- `/admin/invitations/*`
 
 Example core endpoints:
 

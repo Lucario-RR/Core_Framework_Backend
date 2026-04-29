@@ -451,6 +451,26 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '412':
           $ref: '#/components/responses/PreconditionFailed'
+  /me/setup/complete:
+    post:
+      tags:
+        - Users
+      operationId: completeOwnAccountSetup
+      summary: Complete the current account setup flow
+      description: Promotes an `awaiting_setup` account to `active` once required setup actions such as password rotation and required MFA enrollment are complete.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user profile after setup completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /me/avatar:
     post:
       tags:
@@ -517,6 +537,27 @@ paths:
                 $ref: '#/components/schemas/AcknowledgementEnvelope'
         '400':
           $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/activity:
+    get:
+      tags:
+        - IdentitySecurity
+      operationId: listOwnActivity
+      summary: List recent login and account activity
+      description: Return recent login, password, MFA, passkey, session, and suspicious-activity events with time, IP, user-agent, and device metadata.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Activity event list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityEventListEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
   /files/uploads:
@@ -1513,7 +1554,7 @@ paths:
         - AdminSettings
       operationId: createAdminInvitations
       summary: Generate registration invitation code(s)
-      description: Generate one or more invitation codes. Codes may be single-use or multi-use and may have an explicit expiry or no expiry.
+      description: Generate one or more invitation codes. If `code` is omitted the backend generates the random code; if `code` is present the frontend/admin supplied it. Codes may be single-use or multi-use and may have an explicit expiry or no expiry.
       security:
         - bearerAuth: []
       requestBody:
@@ -2487,6 +2528,9 @@ components:
         - recoveryCodesAvailable
         - passkeyCount
         - enrolledFactors
+        - setupRequired
+        - requiredSetupActions
+        - recommendedSetupActions
       properties:
         passwordSet:
           type: boolean
@@ -2535,6 +2579,31 @@ components:
             - password
             - totp
             - passkey
+        setupRequired:
+          type: boolean
+          description: True when the frontend should keep the user in the setup flow before normal application navigation.
+          example: true
+        requiredSetupActions:
+          type: array
+          description: Blocking setup actions. `change_password` maps to `/auth/password/change`, `enroll_mfa` maps to TOTP or passkey enrollment, and `complete_setup` maps to `/me/setup/complete`.
+          items:
+            type: string
+            enum:
+              - change_password
+              - enroll_mfa
+              - complete_setup
+          example:
+            - change_password
+        recommendedSetupActions:
+          type: array
+          description: Non-blocking hardening prompts the frontend may show on the setup page.
+          items:
+            type: string
+            enum:
+              - add_passkey
+              - enroll_mfa
+          example:
+            - add_passkey
     UserSecuritySummaryEnvelope:
       type: object
       additionalProperties: false
@@ -2573,6 +2642,7 @@ components:
           type: string
           enum:
             - pending
+            - awaiting_setup
             - active
             - email_unverified
             - password_reset_required
@@ -2597,9 +2667,6 @@ components:
           type: array
           items:
             type: string
-            enum:
-              - user
-              - admin
           example:
             - user
         scopes:
@@ -3649,6 +3716,15 @@ components:
           example: sam.admin
         status:
           type: string
+          enum:
+            - pending
+            - awaiting_setup
+            - active
+            - email_unverified
+            - password_reset_required
+            - suspended
+            - frozen
+            - deleted
           example: active
         displayName:
           type: string
@@ -3850,14 +3926,20 @@ components:
             $ref: '#/components/schemas/AdminRoleAssignmentRequest'
         accountStatus:
           type: string
+          description: Optional initial status. Defaults to `awaiting_setup`; use `active` only when the account should bypass the setup status.
           enum:
+            - awaiting_setup
             - pending
             - active
             - email_unverified
             - password_reset_required
             - suspended
             - frozen
-          example: active
+          example: awaiting_setup
+        requirePasswordChange:
+          type: boolean
+          description: 'Defaults to true unless `accountStatus` is explicitly `active`. When true, login responses include `security.requiredSetupActions: ["change_password"]`.'
+          example: true
     AdminUserCreateResponse:
       type: object
       additionalProperties: false
@@ -3933,6 +4015,7 @@ components:
           type: string
           enum:
             - pending
+            - awaiting_setup
             - active
             - email_unverified
             - password_reset_required
@@ -3998,6 +4081,7 @@ components:
             - 'null'
           enum:
             - pending
+            - awaiting_setup
             - active
             - email_unverified
             - password_reset_required
@@ -4028,7 +4112,7 @@ components:
             - 'null'
           minLength: 6
           maxLength: 128
-          description: Optional admin-provided invitation code. Only allowed when count is 1.
+          description: Optional frontend/admin-provided invitation code. Omit this field to have the backend generate a random `inv_...` code. A provided code is only allowed when count is 1.
           example: tenant-launch-2026
         email:
           type:
@@ -4065,6 +4149,7 @@ components:
       required:
         - id
         - code
+        - codeSource
         - roleCodes
         - maxUses
         - createdAt
@@ -4075,6 +4160,13 @@ components:
           description: Plain invitation code returned once; only its hash is stored.
           type: string
           example: inv_k1uYb5xTq9nA4pM2sR8cVQ
+        codeSource:
+          type: string
+          enum:
+            - generated
+            - provided
+          description: '`generated` means the backend produced the code; `provided` means the frontend/admin supplied `code` in the create request.'
+          example: generated
         email:
           type:
             - string
@@ -4706,6 +4798,7 @@ components:
           example:
             - admin:users:read
             - admin:users:write
+            - admin:invitations:read
             - admin:security:read
             - admin:settings:write
     RoleCreateRequest:

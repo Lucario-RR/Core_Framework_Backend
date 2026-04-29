@@ -9,9 +9,9 @@ use crate::{
         EmailAddressCreateRequest, EmailChangeRequestCreateRequest, Passkey,
         PasskeyRegistrationOptions, PasskeyRegistrationOptionsRequest,
         PasskeyRegistrationVerifyRequest, PhoneNumber, PhoneNumberCreateRequest,
-        ProfileUpdateRequest, RecoveryCodeList, SecurityReportCreateRequest, Session,
-        SessionBulkRevokeRequest, TotpEnableRequest, TotpSetup, UserProfile, UserSecuritySummary,
-        VerificationCodeRequest,
+        ProfileUpdateRequest, RecoveryCodeList, SecurityEvent, SecurityReportCreateRequest,
+        Session, SessionBulkRevokeRequest, TotpEnableRequest, TotpSetup, UserProfile,
+        UserSecuritySummary, VerificationCodeRequest,
     },
     auth::{self, AuthContext},
     error::{AppError, AppResult},
@@ -63,6 +63,35 @@ pub async fn update_me(
 
     bump_account_revision(&state.pool, auth_context.account_id).await?;
     get_me(state, auth_context).await
+}
+
+pub async fn complete_account_setup(
+    state: &AppState,
+    auth_context: &AuthContext,
+    context: &RequestContext,
+) -> AppResult<UserProfile> {
+    let security = shared::load_security_summary(&state.pool, auth_context.account_id).await?;
+    let blockers = security
+        .required_setup_actions
+        .iter()
+        .filter(|action| action.as_str() != "complete_setup")
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !blockers.is_empty() {
+        return Err(
+            AppError::conflict("account setup still has required actions")
+                .with_details(json!({ "requiredSetupActions": blockers })),
+        );
+    }
+
+    shared::complete_account_setup_if_ready(
+        &state.pool,
+        auth_context.account_id,
+        Some(&context.request_id),
+    )
+    .await?;
+    shared::load_user_profile(&state.pool, auth_context.account_id).await
 }
 
 async fn update_username_if_requested(
@@ -407,6 +436,16 @@ pub async fn list_own_security_events(
         .await
 }
 
+pub async fn list_own_activity(
+    state: &AppState,
+    auth_context: &AuthContext,
+    offset: i64,
+    limit: i64,
+) -> AppResult<(Vec<SecurityEvent>, Option<String>)> {
+    shared::list_security_events_for_account(&state.pool, auth_context.account_id, offset, limit)
+        .await
+}
+
 pub async fn create_security_report(
     state: &AppState,
     auth_context: &AuthContext,
@@ -575,6 +614,7 @@ pub async fn verify_passkey_registration(
         .await?;
 
     tx.commit().await?;
+    shared::complete_account_setup_if_ready(&state.pool, auth_context.account_id, None).await?;
 
     Ok(Passkey {
         id: authenticator_id,
@@ -711,6 +751,7 @@ pub async fn enable_totp(
         .await?;
 
     rotate_recovery_codes(state, auth_context).await?;
+    shared::complete_account_setup_if_ready(&state.pool, auth_context.account_id, None).await?;
     shared::load_security_summary(&state.pool, auth_context.account_id).await
 }
 

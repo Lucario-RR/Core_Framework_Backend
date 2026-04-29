@@ -18,6 +18,7 @@ const EFFECTIVE_STATUS_SQL: &str = r#"
 case
     when a.deleted_at is not null or a.status_code = 'deleted' then 'deleted'
     when a.status_code = 'pending' then 'pending'
+    when a.status_code = 'awaiting_setup' then 'awaiting_setup'
     when exists (
         select 1
         from iam.account_restriction ar
@@ -330,6 +331,13 @@ pub async fn load_security_summary(
     pool: &PgPool,
     account_id: Uuid,
 ) -> AppResult<UserSecuritySummary> {
+    let account_status =
+        sqlx::query_scalar::<_, String>("select status_code from iam.account where id = $1")
+            .bind(account_id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| AppError::not_found("account not found"))?;
+
     let password_row = sqlx::query(
         r#"
         select pc.must_rotate
@@ -420,6 +428,7 @@ pub async fn load_security_summary(
         get_account_setting_bool(pool, account_id, "security.require_mfa_enrollment").await?;
     let mfa_required = account_mfa_required;
     let mfa_enabled = totp_enabled || passkey_count > 0;
+    let passkey_enabled = get_global_setting_bool(pool, "auth.passkey.enabled").await?;
 
     let mut enrolled_factors = Vec::new();
     if password_set {
@@ -435,6 +444,30 @@ pub async fn load_security_summary(
         enrolled_factors.push("recovery_code".to_string());
     }
 
+    let mut required_setup_actions = Vec::new();
+    if must_rotate_password {
+        required_setup_actions.push("change_password".to_string());
+    }
+    if mfa_required && !mfa_enabled {
+        required_setup_actions.push("enroll_mfa".to_string());
+    }
+    if account_status == "awaiting_setup" && required_setup_actions.is_empty() {
+        required_setup_actions.push("complete_setup".to_string());
+    }
+
+    let mut recommended_setup_actions = Vec::new();
+    if passkey_enabled && passkey_count == 0 {
+        recommended_setup_actions.push("add_passkey".to_string());
+    }
+    if !mfa_enabled && !mfa_required {
+        recommended_setup_actions.push("enroll_mfa".to_string());
+    }
+    recommended_setup_actions.sort();
+    recommended_setup_actions.dedup();
+    let setup_required = account_status == "awaiting_setup"
+        || must_rotate_password
+        || (mfa_required && !mfa_enabled);
+
     Ok(UserSecuritySummary {
         password_set,
         must_rotate_password,
@@ -447,6 +480,9 @@ pub async fn load_security_summary(
         recovery_codes_available,
         passkey_count: passkey_count as i32,
         enrolled_factors,
+        setup_required,
+        required_setup_actions,
+        recommended_setup_actions,
     })
 }
 
@@ -614,6 +650,77 @@ pub async fn load_admin_user_summary(
         suspended_until: base.suspended_until,
         security,
     })
+}
+
+pub async fn complete_account_setup_if_ready(
+    pool: &PgPool,
+    account_id: Uuid,
+    request_id: Option<&str>,
+) -> AppResult<bool> {
+    let status =
+        sqlx::query_scalar::<_, String>("select status_code from iam.account where id = $1")
+            .bind(account_id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| AppError::not_found("account not found"))?;
+
+    if status != "awaiting_setup" {
+        return Ok(false);
+    }
+
+    let security = load_security_summary(pool, account_id).await?;
+    if security.must_rotate_password || (security.mfa_required && !security.mfa_enabled) {
+        return Ok(false);
+    }
+
+    let affected = sqlx::query(
+        r#"
+        update iam.account
+        set status_code = 'active',
+            activated_at = coalesce(activated_at, now()),
+            updated_at = now()
+        where id = $1
+          and status_code = 'awaiting_setup'
+        "#,
+    )
+    .bind(account_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    if affected == 0 {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        r#"
+        insert into iam.account_status_history (
+            id, account_id, from_status_code, to_status_code, reason_code, reason_text,
+            changed_by_account_id, request_id, changed_at
+        )
+        values ($1, $2, 'awaiting_setup', 'active', 'SETUP_COMPLETED',
+                'Account setup completed.', $2, $3, now())
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(account_id)
+    .bind(request_id)
+    .execute(pool)
+    .await?;
+
+    record_audit_log(
+        pool,
+        Some(account_id),
+        "account.setup.completed",
+        "account",
+        Some(account_id),
+        Some("Account setup completed.".to_string()),
+        json!({}),
+        request_id,
+    )
+    .await?;
+
+    Ok(true)
 }
 
 pub async fn record_audit_log(

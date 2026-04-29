@@ -87,8 +87,7 @@ async fn list_roles(
     Extension(context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
-    let _ = auth_context;
+    let _ = admin_auth(&state, &headers, "admin:roles:read").await?;
     let roles = admin_service::list_roles(&state).await?;
     Ok(Json(envelope(&context.request_id, roles)))
 }
@@ -98,7 +97,7 @@ async fn list_permissions(
     Extension(context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:roles:read").await?;
     let permissions = admin_service::list_permissions(&state).await?;
     Ok(Json(envelope(&context.request_id, permissions)))
 }
@@ -109,7 +108,7 @@ async fn create_role(
     headers: HeaderMap,
     Json(request): Json<RoleCreateRequest>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:roles:write").await?;
     let role = admin_service::create_role(&state, &auth_context, &context, request).await?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -124,7 +123,7 @@ async fn update_role(
     Path(role_code): Path<String>,
     Json(request): Json<RoleUpdateRequest>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:roles:write").await?;
     let role =
         admin_service::update_role(&state, &auth_context, &context, &role_code, request).await?;
     Ok(Json(envelope(&context.request_id, role)))
@@ -136,7 +135,7 @@ async fn delete_role(
     headers: HeaderMap,
     Path(role_code): Path<String>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:roles:write").await?;
     let acknowledgement =
         admin_service::delete_role(&state, &auth_context, &context, &role_code).await?;
     Ok(Json(envelope(&context.request_id, acknowledgement)))
@@ -147,7 +146,7 @@ async fn get_admin_overview(
     Extension(context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:settings:read").await?;
     let overview = admin_service::admin_overview(&state).await?;
     Ok(Json(envelope(&context.request_id, overview)))
 }
@@ -158,7 +157,7 @@ async fn create_admin_invitations(
     headers: HeaderMap,
     Json(request): Json<AdminInvitationCreateRequest>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:invitations:write").await?;
     let invitations =
         admin_service::create_admin_invitations(&state, &auth_context, &context, request).await?;
     Ok((
@@ -173,7 +172,7 @@ async fn list_admin_invitations(
     headers: HeaderMap,
     Query(query): Query<AdminInvitationListQuery>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:invitations:read").await?;
     let (offset, limit) = pagination(query.cursor.as_deref(), query.limit)?;
     let (invitations, next_cursor) =
         admin_service::list_admin_invitations(&state, query, offset, limit).await?;
@@ -191,7 +190,7 @@ async fn revoke_admin_invitation(
     Path(invitation_id): Path<uuid::Uuid>,
     maybe_body: Option<Json<AdminInvitationRevokeRequest>>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:invitations:write").await?;
     let request = maybe_body.map(|Json(value)| value).unwrap_or_default();
     let acknowledgement = admin_service::revoke_admin_invitation(
         &state,
@@ -209,7 +208,7 @@ async fn get_admin_password_policy(
     Extension(context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:settings:read").await?;
     let policy = admin_service::get_password_policy(&state).await?;
     Ok(Json(envelope(&context.request_id, policy)))
 }
@@ -220,7 +219,7 @@ async fn update_admin_password_policy(
     headers: HeaderMap,
     Json(request): Json<PasswordPolicy>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:settings:write").await?;
     let policy =
         admin_service::update_password_policy(&state, &auth_context, &context, request).await?;
     Ok(Json(envelope(&context.request_id, policy)))
@@ -232,7 +231,7 @@ async fn list_audit_logs(
     headers: HeaderMap,
     Query(query): Query<SearchPaginationQuery>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:security:read").await?;
     let (offset, limit) = pagination(query.cursor.as_deref(), query.limit)?;
     let (logs, next_cursor) =
         admin_service::list_audit_logs(&state, query.query.as_deref(), offset, limit).await?;
@@ -249,7 +248,7 @@ async fn list_security_events(
     headers: HeaderMap,
     Query(query): Query<SearchPaginationQuery>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:security:read").await?;
     let (offset, limit) = pagination(query.cursor.as_deref(), query.limit)?;
     let (events, next_cursor) =
         admin_service::list_security_events(&state, query.query.as_deref(), offset, limit).await?;
@@ -266,7 +265,7 @@ async fn list_admin_users(
     headers: HeaderMap,
     Query(query): Query<AdminUserListQuery>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:users:read").await?;
     let (offset, limit) = pagination(query.cursor.as_deref(), query.limit)?;
     let (users, next_cursor) = admin_service::list_admin_users(
         &state,
@@ -290,7 +289,7 @@ async fn create_admin_user(
     headers: HeaderMap,
     Json(request): Json<AdminUserCreateRequest>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:users:write").await?;
     let user = admin_service::create_admin_user(&state, &auth_context, &context, request).await?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -304,7 +303,7 @@ async fn get_admin_user(
     headers: HeaderMap,
     Path(account_id): Path<uuid::Uuid>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:users:read").await?;
     let user = admin_service::get_admin_user(&state, account_id).await?;
     Ok(Json(envelope(&context.request_id, user)))
 }
@@ -316,7 +315,7 @@ async fn update_admin_user(
     Path(account_id): Path<uuid::Uuid>,
     Json(request): Json<AdminUserUpdateRequest>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:users:write").await?;
     let user =
         admin_service::update_admin_user(&state, &auth_context, &context, account_id, request)
             .await?;
@@ -330,7 +329,7 @@ async fn list_admin_user_sessions(
     Path(account_id): Path<uuid::Uuid>,
     Query(query): Query<crate::api::contracts::PaginationQuery>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:security:read").await?;
     let (offset, limit) = pagination(query.cursor.as_deref(), query.limit)?;
     let (sessions, next_cursor) =
         admin_service::list_admin_user_sessions(&state, account_id, offset, limit).await?;
@@ -348,7 +347,7 @@ async fn revoke_admin_user_sessions(
     Path(account_id): Path<uuid::Uuid>,
     maybe_body: Option<Json<SessionBulkRevokeRequest>>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:security:write").await?;
     let request = maybe_body.map(|Json(value)| value).unwrap_or_default();
     let acknowledgement = admin_service::revoke_admin_user_sessions(
         &state,
@@ -368,7 +367,7 @@ async fn list_admin_user_security_events(
     Path(account_id): Path<uuid::Uuid>,
     Query(query): Query<crate::api::contracts::PaginationQuery>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:security:read").await?;
     let (offset, limit) = pagination(query.cursor.as_deref(), query.limit)?;
     let (events, next_cursor) =
         admin_service::list_admin_user_security_events(&state, account_id, offset, limit).await?;
@@ -386,7 +385,7 @@ async fn list_admin_user_audit_logs(
     Path(account_id): Path<uuid::Uuid>,
     Query(query): Query<crate::api::contracts::PaginationQuery>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:security:read").await?;
     let (offset, limit) = pagination(query.cursor.as_deref(), query.limit)?;
     let (logs, next_cursor) =
         admin_service::list_admin_user_audit_logs(&state, account_id, offset, limit).await?;
@@ -403,7 +402,7 @@ async fn admin_verify_user_email(
     headers: HeaderMap,
     Path((account_id, email_id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:users:write").await?;
     let email = admin_service::admin_verify_user_email(&state, account_id, email_id).await?;
     Ok(Json(envelope(&context.request_id, email)))
 }
@@ -414,7 +413,7 @@ async fn admin_unverify_user_email(
     headers: HeaderMap,
     Path((account_id, email_id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:users:write").await?;
     let email = admin_service::admin_unverify_user_email(&state, account_id, email_id).await?;
     Ok(Json(envelope(&context.request_id, email)))
 }
@@ -425,7 +424,7 @@ async fn bulk_admin_user_action(
     headers: HeaderMap,
     Json(request): Json<AdminUserBulkActionRequest>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:users:write").await?;
     let acknowledgement =
         admin_service::bulk_admin_user_action(&state, &auth_context, &context, request).await?;
     Ok(Json(envelope(&context.request_id, acknowledgement)))
@@ -436,7 +435,7 @@ async fn list_system_settings(
     Extension(context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let _ = admin_auth(&state, &headers).await?;
+    let _ = admin_auth(&state, &headers, "admin:settings:read").await?;
     let settings = admin_service::list_system_settings(&state).await?;
     Ok(Json(envelope(&context.request_id, settings)))
 }
@@ -448,7 +447,7 @@ async fn update_system_setting(
     Path(setting_key): Path<String>,
     Json(request): Json<AdminSystemSettingUpdateRequest>,
 ) -> crate::error::AppResult<impl axum::response::IntoResponse> {
-    let auth_context = admin_auth(&state, &headers).await?;
+    let auth_context = admin_auth(&state, &headers, "admin:settings:write").await?;
     let setting =
         admin_service::update_system_setting(&state, &auth_context, &setting_key, request).await?;
     Ok(Json(envelope(&context.request_id, setting)))
@@ -457,9 +456,10 @@ async fn update_system_setting(
 async fn admin_auth(
     state: &AppState,
     headers: &HeaderMap,
+    required_scope: &str,
 ) -> crate::error::AppResult<auth::AuthContext> {
     let auth_context = auth::require_auth(state, headers).await?;
-    auth_context.require_admin()?;
+    auth_context.require_admin_scope(required_scope)?;
     Ok(auth_context)
 }
 

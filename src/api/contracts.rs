@@ -82,6 +82,9 @@ pub struct UserSecuritySummary {
     pub recovery_codes_available: bool,
     pub passkey_count: i32,
     pub enrolled_factors: Vec<String>,
+    pub setup_required: bool,
+    pub required_setup_actions: Vec<String>,
+    pub recommended_setup_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,6 +421,7 @@ pub struct AdminUserCreateRequest {
     pub role_codes: Option<Vec<String>>,
     pub role_assignments: Option<Vec<AdminRoleAssignmentRequest>>,
     pub account_status: Option<String>,
+    pub require_password_change: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -511,6 +515,7 @@ pub struct AdminInvitationCreateRequest {
 pub struct AdminInvitationCode {
     pub id: Uuid,
     pub code: String,
+    pub code_source: String,
     pub email: Option<String>,
     pub role_codes: Vec<String>,
     pub max_uses: i32,

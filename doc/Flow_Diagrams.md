@@ -287,6 +287,7 @@ flowchart TD
 | Auth | `POST /api/v1/auth/passkeys/authentication/verify` | `auth_routes::verify_passkey_authentication` | `services::auth::verify_passkey_authentication` |
 | Profile | `GET /api/v1/me` | `users::get_me` | `services::user::get_me` |
 | Profile | `PATCH /api/v1/me` | `users::update_me` | `services::user::update_me` |
+| Account | `POST /api/v1/me/setup/complete` | `users::complete_account_setup` | `services::user::complete_account_setup` |
 | Profile | `POST /api/v1/me/avatar` | `users::set_avatar` | `services::user::set_avatar` |
 | Profile | `DELETE /api/v1/me/avatar` | `users::remove_avatar` | `services::user::remove_avatar` |
 | Account | `POST /api/v1/me/account/deactivate` | `users::deactivate_own_account` | `services::user::deactivate_own_account` |
@@ -294,6 +295,7 @@ flowchart TD
 | Sessions | `POST /api/v1/me/sessions/revoke-all` | `users::revoke_all_own_sessions` | `services::user::revoke_all_own_sessions` |
 | Sessions | `DELETE /api/v1/me/sessions/{sessionId}` | `users::revoke_own_session` | `services::user::revoke_own_session` |
 | Security | `GET /api/v1/me/security` | `users::get_security_summary` | `services::user::get_security_summary` |
+| Security | `GET /api/v1/me/activity` | `users::list_own_activity` | `services::user::list_own_activity` |
 | Security | `GET /api/v1/me/security/events` | `users::list_own_security_events` | `services::user::list_own_security_events` |
 | Security | `POST /api/v1/me/security/reports` | `users::create_security_report` | `services::user::create_security_report` |
 | Passkeys | `GET /api/v1/me/passkeys` | `users::list_passkeys` | `services::user::list_passkeys` |
@@ -331,9 +333,14 @@ flowchart TD
 | Privacy | `GET /api/v1/privacy/cookie-preferences` | `privacy::get_cookie_preferences` | `services::privacy::get_cookie_preferences` |
 | Privacy | `PUT /api/v1/privacy/cookie-preferences` | `privacy::set_cookie_preferences` | `services::privacy::set_cookie_preferences` |
 | Admin | `GET /api/v1/admin/roles` | `admin::list_roles` | `services::admin::list_roles` |
+| Admin | `POST /api/v1/admin/roles` | `admin::create_role` | `services::admin::create_role` |
+| Admin | `PATCH /api/v1/admin/roles/{roleCode}` | `admin::update_role` | `services::admin::update_role` |
 | Admin | `DELETE /api/v1/admin/roles/{roleCode}` | `admin::delete_role` | `services::admin::delete_role` |
+| Admin | `GET /api/v1/admin/permissions` | `admin::list_permissions` | `services::admin::list_permissions` |
 | Admin | `GET /api/v1/admin/overview` | `admin::get_admin_overview` | `services::admin::admin_overview` |
+| Admin | `GET /api/v1/admin/invitations` | `admin::list_admin_invitations` | `services::admin::list_admin_invitations` |
 | Admin | `POST /api/v1/admin/invitations` | `admin::create_admin_invitations` | `services::admin::create_admin_invitations` |
+| Admin | `POST /api/v1/admin/invitations/{invitationId}/revoke` | `admin::revoke_admin_invitation` | `services::admin::revoke_admin_invitation` |
 | Admin | `GET /api/v1/admin/password-policy` | `admin::get_admin_password_policy` | `services::admin::get_password_policy` |
 | Admin | `PATCH /api/v1/admin/password-policy` | `admin::update_admin_password_policy` | `services::admin::update_password_policy` |
 | Admin | `GET /api/v1/admin/audit-logs` | `admin::list_audit_logs` | `services::admin::list_audit_logs` |
@@ -669,6 +676,22 @@ flowchart TD
     I --> J[200 Account deactivated]
 ```
 
+### Complete Account Setup
+
+```mermaid
+flowchart TD
+    A[POST /api/v1/me/setup/complete] --> B[require_auth]
+    B --> C[Load security summary]
+    C --> D{Blocking setup actions remain?}
+    D -->|Yes| X[409 requiredSetupActions returned]
+    D -->|No| E{status_code is awaiting_setup?}
+    E -->|Yes| F[Set account active and write status history]
+    E -->|No| G[No status change needed]
+    F --> H[Reload profile]
+    G --> H
+    H --> I[200 UserProfile]
+```
+
 ### List Own Sessions
 
 ```mermaid
@@ -711,8 +734,19 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[GET /api/v1/me/security] --> B[require_auth]
-    B --> C[Check password credential, verified contacts, TOTP, passkeys, recovery codes, account MFA flag]
-    C --> D[Return UserSecuritySummary]
+    B --> C[Check password credential, verified contacts, TOTP, passkeys, recovery codes, account MFA flag, setup status]
+    C --> D[Build requiredSetupActions and recommendedSetupActions]
+    D --> E[Return UserSecuritySummary]
+```
+
+### List Own Activity
+
+```mermaid
+flowchart TD
+    A[GET /api/v1/me/activity] --> B[require_auth]
+    B --> C[Decode cursor and clamp limit]
+    C --> D[List account activity/security events newest first]
+    D --> E[Return time, IP, user-agent, device, and nextCursor]
 ```
 
 ### List Own Security Events
@@ -1145,10 +1179,13 @@ Every admin route uses the same guard:
 ```mermaid
 flowchart TD
     A[Admin API request] --> B[require_auth]
-    B --> C{AuthContext has admin role?}
-    C -->|No| X[403 administrator access is required]
-    C -->|Yes| D[Call admin service]
+    B --> C[Reload current roles and scopes from DB]
+    C --> D{Has admin role or required admin:* scope?}
+    D -->|No| X[403 required admin permission is missing]
+    D -->|Yes| E[Call admin service]
 ```
+
+Permission scopes used by the guard: `admin:users:*`, `admin:settings:*`, `admin:roles:*`, `admin:security:*`, and `admin:invitations:*`. The seeded `admin` role still passes every admin route.
 
 ### List Roles
 
@@ -1170,7 +1207,7 @@ flowchart TD
     D -->|No| E[Insert or update iam.role]
     E --> F[Replace iam.role_permission rows when requested]
     D -->|Yes| G[Reject admin and user roles]
-    G --> H[Soft-delete role and expire active account_role rows]
+    G --> H[Soft-delete role and expire active account_role rows immediately]
     F --> I[Record admin.role audit log]
     H --> I
     I --> J[Return RoleDefinition or acknowledgement]
@@ -1227,14 +1264,15 @@ flowchart TD
     C --> D{Password supplied?}
     D -->|No| E[Generate compliant initial password]
     D -->|Yes| F[Use supplied initial password]
-    E --> G[create_local_account with requested roles and admin actor]
+    E --> G[Default status awaiting_setup and require password rotation unless overridden]
     F --> G
-    G --> H[Apply role assignment expiries when supplied]
-    H --> I{Requested status active or pending?}
-    I -->|Yes/default| J[Load admin user summary]
-    I -->|Other| K[Apply account status]
-    K --> J
-    J --> L[Return user, initialPassword, accountText]
+    G --> H[create_local_account with requested roles and admin actor]
+    H --> I[Apply role assignment expiries when supplied]
+    I --> J{Requested status is active, pending, or awaiting_setup?}
+    J -->|Yes/default| L[Load admin user summary]
+    J -->|Other| K[Apply account status]
+    K --> L
+    L --> M[Return user, initialPassword, accountText]
 ```
 
 ### Create Admin Invitations
@@ -1243,10 +1281,10 @@ flowchart TD
 flowchart TD
     A[POST /api/v1/admin/invitations] --> B[admin_auth]
     B --> C[Validate count, optional custom code, maxUses, expiry, email, and roleCodes]
-    C --> D[Use admin-provided code or generate opaque invite code]
+    C --> D[Use frontend/admin-provided code or generate backend random code]
     D --> E[Store only invite_code_hash with role_codes_json, max_uses, expires_at]
     E --> F[Record admin.invitation.created audit log]
-    F --> G[201 invitation codes returned once]
+    F --> G[201 invitation codes returned once with codeSource]
 ```
 
 ### Manage Admin Invitations
@@ -1424,7 +1462,8 @@ flowchart TD
     C -->|Invalid/expired| X1[401 token error]
     C -->|Valid| D[Check auth.session id/account id, not revoked, not expired]
     D -->|Missing| X2[401 session is no longer valid]
-    D -->|Found| E[Return AuthContext account_id, session_id, roles, scopes]
+    D -->|Found| E[Reload unexpired, non-deleted roles and permission scopes]
+    E --> F[Return AuthContext account_id, session_id, roles, scopes]
 ```
 
 ### `auth::issue_session`

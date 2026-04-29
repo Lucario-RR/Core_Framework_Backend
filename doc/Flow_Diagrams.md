@@ -331,6 +331,7 @@ flowchart TD
 | Privacy | `GET /api/v1/privacy/cookie-preferences` | `privacy::get_cookie_preferences` | `services::privacy::get_cookie_preferences` |
 | Privacy | `PUT /api/v1/privacy/cookie-preferences` | `privacy::set_cookie_preferences` | `services::privacy::set_cookie_preferences` |
 | Admin | `GET /api/v1/admin/roles` | `admin::list_roles` | `services::admin::list_roles` |
+| Admin | `DELETE /api/v1/admin/roles/{roleCode}` | `admin::delete_role` | `services::admin::delete_role` |
 | Admin | `GET /api/v1/admin/overview` | `admin::get_admin_overview` | `services::admin::admin_overview` |
 | Admin | `POST /api/v1/admin/invitations` | `admin::create_admin_invitations` | `services::admin::create_admin_invitations` |
 | Admin | `GET /api/v1/admin/password-policy` | `admin::get_admin_password_policy` | `services::admin::get_password_policy` |
@@ -390,7 +391,7 @@ Implementation notes:
 - Password rules are read from `auth.password.policy` and enforced server-side.
 - `invitationCode` is required when `registration.invite_only` is true; invitation roles replace the default `user` role.
 - Email is normalized and checked for duplicates, allowed domains, and blocked domains.
-- Username is stored in `iam.account.public_handle` and normalized to lowercase.
+- Username is required, stored in `iam.account.public_handle`, normalized to lowercase, and enforced as a unique login identifier.
 - Login-enabled phone numbers are unique across active rows.
 - Password is stored as Argon2id hash; raw password is never persisted.
 - Primary email starts as `pending`; email verification is queued.
@@ -1159,6 +1160,22 @@ flowchart TD
     D --> E[Return RoleDefinition list]
 ```
 
+### Create, Update, Or Delete Role
+
+```mermaid
+flowchart TD
+    A[POST, PATCH, or DELETE /api/v1/admin/roles] --> B[admin_auth]
+    B --> C[Validate role code, name, MFA flag, and permission codes]
+    C --> D{Delete?}
+    D -->|No| E[Insert or update iam.role]
+    E --> F[Replace iam.role_permission rows when requested]
+    D -->|Yes| G[Reject admin and user roles]
+    G --> H[Soft-delete role and expire active account_role rows]
+    F --> I[Record admin.role audit log]
+    H --> I
+    I --> J[Return RoleDefinition or acknowledgement]
+```
+
 ### Admin Overview
 
 ```mermaid
@@ -1206,17 +1223,18 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[POST /api/v1/admin/users] --> B[admin_auth]
-    B --> C[Validate roles, username, and password policy]
+    B --> C[Validate roles, optional role expiries, username, and password policy]
     C --> D{Password supplied?}
     D -->|No| E[Generate compliant initial password]
     D -->|Yes| F[Use supplied initial password]
     E --> G[create_local_account with requested roles and admin actor]
     F --> G
-    G --> H{Requested status active or pending?}
-    H -->|Yes/default| I[Load admin user summary]
-    H -->|Other| J[Apply account status]
-    J --> I
-    I --> K[Return user, initialPassword, accountText]
+    G --> H[Apply role assignment expiries when supplied]
+    H --> I{Requested status active or pending?}
+    I -->|Yes/default| J[Load admin user summary]
+    I -->|Other| K[Apply account status]
+    K --> J
+    J --> L[Return user, initialPassword, accountText]
 ```
 
 ### Create Admin Invitations
@@ -1224,11 +1242,23 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[POST /api/v1/admin/invitations] --> B[admin_auth]
-    B --> C[Validate count, maxUses, expiry, email, and roleCodes]
-    C --> D[Generate one or more opaque invite codes]
+    B --> C[Validate count, optional custom code, maxUses, expiry, email, and roleCodes]
+    C --> D[Use admin-provided code or generate opaque invite code]
     D --> E[Store only invite_code_hash with role_codes_json, max_uses, expires_at]
     E --> F[Record admin.invitation.created audit log]
     F --> G[201 invitation codes returned once]
+```
+
+### Manage Admin Invitations
+
+```mermaid
+flowchart TD
+    A[GET /api/v1/admin/invitations] --> B[admin_auth]
+    B --> C[List invite metadata without plaintext code]
+    C --> D[Return status, use counts, expiry, and audit-facing ids]
+    E[POST /api/v1/admin/invitations/id/revoke] --> F[admin_auth]
+    F --> G[Mark invite revoked]
+    G --> H[Record admin.invitation.revoked audit log]
 ```
 
 ### Password Policy

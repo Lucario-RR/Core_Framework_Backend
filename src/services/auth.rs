@@ -105,6 +105,8 @@ pub async fn register_admin_bootstrap(
         from iam.account_role ar
         join iam.role r on r.id = ar.role_id
         where r.code = 'admin'
+          and (ar.expires_at is null or ar.expires_at > now())
+          and r.deleted_at is null
         "#,
     )
     .fetch_one(&state.pool)
@@ -380,6 +382,7 @@ pub async fn login(
             where ae.normalized_email = $1
               and ae.deleted_at is null
               and ae.is_login_enabled = true
+              and a.deleted_at is null
 
             union all
 
@@ -389,13 +392,14 @@ pub async fn login(
             where ap.e164_phone_number = $2
               and ap.deleted_at is null
               and ap.is_login_enabled = true
+              and a.deleted_at is null
 
             union all
 
             select a.id as account_id, 'username' as login_identifier_type
             from iam.account a
-            where a.public_handle is not null
-              and lower(a.public_handle) = $3
+            where lower(a.public_handle) = $3
+              and a.deleted_at is null
         )
         select
             a.id as account_id,
@@ -509,16 +513,78 @@ pub async fn login(
 }
 
 fn resolve_login_identifier(request: &LoginRequest) -> AppResult<String> {
-    let identifier = request
-        .login
-        .as_deref()
-        .or(request.username.as_deref())
-        .or(request.email.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| AppError::validation("login, username, or email is required"))?;
+    [
+        request.login.as_deref(),
+        request.username.as_deref(),
+        request.email.as_deref(),
+        request.phone_number.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|value| !value.is_empty())
+    .map(ToOwned::to_owned)
+    .ok_or_else(|| AppError::validation("login, username, email, or phoneNumber is required"))
+}
 
-    Ok(identifier.to_string())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn login_request(
+        login: Option<&str>,
+        username: Option<&str>,
+        email: Option<&str>,
+        phone_number: Option<&str>,
+    ) -> LoginRequest {
+        LoginRequest {
+            login: login.map(str::to_string),
+            email: email.map(str::to_string),
+            username: username.map(str::to_string),
+            phone_number: phone_number.map(str::to_string),
+            password: "ValidPassword123".to_string(),
+            remember_me: None,
+        }
+    }
+
+    #[test]
+    fn resolve_login_identifier_accepts_phone_number_field() {
+        let request = login_request(None, None, None, Some("+447700900123"));
+
+        assert_eq!(resolve_login_identifier(&request).unwrap(), "+447700900123");
+    }
+
+    #[test]
+    fn resolve_login_identifier_accepts_phone_alias() {
+        let request: LoginRequest = serde_json::from_value(json!({
+            "phone": "+447700900124",
+            "password": "ValidPassword123"
+        }))
+        .unwrap();
+
+        assert_eq!(resolve_login_identifier(&request).unwrap(), "+447700900124");
+    }
+
+    #[test]
+    fn resolve_login_identifier_accepts_preferred_login_field() {
+        let request: LoginRequest = serde_json::from_value(json!({
+            "login": "alex@example.com",
+            "password": "ValidPassword123"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            resolve_login_identifier(&request).unwrap(),
+            "alex@example.com"
+        );
+    }
+
+    #[test]
+    fn resolve_login_identifier_skips_blank_preferred_fields() {
+        let request = login_request(Some(" "), Some("alex"), Some("alex@example.com"), None);
+
+        assert_eq!(resolve_login_identifier(&request).unwrap(), "alex");
+    }
 }
 
 async fn load_registration_invite_for_request(
@@ -1496,11 +1562,7 @@ pub async fn create_local_account(
     let account_id = Uuid::new_v4();
     let primary_email_id = Uuid::new_v4();
     let normalized_email = normalize_email(&request.email);
-    let username = request
-        .username
-        .as_deref()
-        .map(validate_username)
-        .transpose()?;
+    let username = validate_username(&request.username)?;
     let normalized_phone = request
         .primary_phone
         .as_ref()
@@ -1510,7 +1572,7 @@ pub async fn create_local_account(
     enforce_password_policy(
         &policy,
         &request.password,
-        username.as_deref(),
+        Some(&username),
         &[request.email.clone()],
     )?;
 
@@ -1534,25 +1596,22 @@ pub async fn create_local_account(
         ));
     }
 
-    if let Some(username) = username.as_ref() {
-        let username_exists = sqlx::query_scalar::<_, bool>(
-            r#"
-            select exists (
-                select 1
-                from iam.account
-                where public_handle is not null
-                  and lower(public_handle) = $1
-                  and deleted_at is null
-            )
-            "#,
+    let username_exists = sqlx::query_scalar::<_, bool>(
+        r#"
+        select exists (
+            select 1
+            from iam.account
+            where lower(public_handle) = $1
+              and deleted_at is null
         )
-        .bind(username)
-        .fetch_one(pool)
-        .await?;
+        "#,
+    )
+    .bind(&username)
+    .fetch_one(pool)
+    .await?;
 
-        if username_exists {
-            return Err(AppError::conflict("username is already in use"));
-        }
+    if username_exists {
+        return Err(AppError::conflict("username is already in use"));
     }
 
     if let Some(primary_phone) = normalized_phone.as_ref() {
@@ -1589,12 +1648,15 @@ pub async fn create_local_account(
     let mut tx = pool.begin().await?;
     sqlx::query(
         r#"
-        insert into iam.account (id, public_handle, status_code, created_by_account_id, activated_at, created_at, updated_at)
-        values ($1, $2, $3, $4, case when $3 = 'active' then now() else null end, now(), now())
+        insert into iam.account (
+            id, public_handle, status_code, created_by_account_id, activated_at,
+            username_changed_at, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, case when $3 = 'active' then now() else null end, now(), now(), now())
         "#,
     )
     .bind(account_id)
-    .bind(username.as_deref())
+    .bind(&username)
     .bind(&status_code)
     .bind(created_by_account_id)
     .execute(&mut *tx)
@@ -1705,6 +1767,7 @@ pub async fn create_local_account(
             select $1, r.id, $2, now()
             from iam.role r
             where r.code = $3
+              and r.deleted_at is null
             on conflict do nothing
             "#,
         )
@@ -1863,6 +1926,7 @@ async fn mfa_enrollment_required_for_new_account(
             select 1
             from iam.role
             where code = any($1::text[])
+              and deleted_at is null
               and requires_mfa = true
         )
         "#,
@@ -2335,6 +2399,9 @@ async fn enforce_account_access(
 ) -> AppResult<()> {
     if status_code == "deleted" {
         return Err(AppError::forbidden("account has been deleted"));
+    }
+    if status_code == "pending" {
+        return Err(AppError::forbidden("account is waiting for activation"));
     }
 
     let restriction = sqlx::query_scalar::<_, String>(

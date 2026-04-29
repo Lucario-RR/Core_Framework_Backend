@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
@@ -17,6 +17,7 @@ use crate::{
     error::{AppError, AppResult},
     request_context::RequestContext,
     services::shared,
+    utils::validate_username,
     AppState,
 };
 
@@ -36,6 +37,8 @@ pub async fn update_me(
     request: ProfileUpdateRequest,
 ) -> AppResult<(UserProfile, String)> {
     enforce_if_match(&state.pool, auth_context.account_id, if_match).await?;
+
+    update_username_if_requested(&state.pool, auth_context.account_id, request.username).await?;
 
     sqlx::query(
         r#"
@@ -60,6 +63,107 @@ pub async fn update_me(
 
     bump_account_revision(&state.pool, auth_context.account_id).await?;
     get_me(state, auth_context).await
+}
+
+async fn update_username_if_requested(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    requested_username: Option<String>,
+) -> AppResult<()> {
+    let Some(requested_username) = requested_username else {
+        return Ok(());
+    };
+
+    let normalized = validate_username(&requested_username)?;
+    let row = sqlx::query(
+        r#"
+        select public_handle, username_changed_at
+        from iam.account
+        where id = $1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("account not found"))?;
+
+    let current_username: Option<String> = row.try_get("public_handle")?;
+    if current_username.as_deref() == Some(normalized.as_str()) {
+        return Ok(());
+    }
+
+    ensure_username_available(pool, account_id, &normalized).await?;
+    enforce_username_change_cooldown(pool, &row).await?;
+
+    sqlx::query(
+        r#"
+        update iam.account
+        set public_handle = $2,
+            username_changed_at = now(),
+            updated_at = now()
+        where id = $1
+        "#,
+    )
+    .bind(account_id)
+    .bind(normalized)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn ensure_username_available(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    username: &str,
+) -> AppResult<()> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        r#"
+        select exists (
+            select 1
+            from iam.account
+            where lower(public_handle) = $1
+              and id <> $2
+              and deleted_at is null
+        )
+        "#,
+    )
+    .bind(username)
+    .bind(account_id)
+    .fetch_one(pool)
+    .await?;
+
+    if exists {
+        Err(AppError::conflict("username is already in use"))
+    } else {
+        Ok(())
+    }
+}
+
+async fn enforce_username_change_cooldown(
+    pool: &sqlx::PgPool,
+    account_row: &sqlx::postgres::PgRow,
+) -> AppResult<()> {
+    let cooldown_seconds =
+        shared::get_global_setting_i64(pool, "account.username.change_cooldown_seconds")
+            .await?
+            .max(0);
+    if cooldown_seconds == 0 {
+        return Ok(());
+    }
+
+    let last_changed_at: Option<DateTime<Utc>> = account_row.try_get("username_changed_at")?;
+    let Some(last_changed_at) = last_changed_at else {
+        return Ok(());
+    };
+
+    let next_change_at = last_changed_at + Duration::seconds(cooldown_seconds);
+    if Utc::now() < next_change_at {
+        return Err(AppError::conflict("username cannot be changed yet")
+            .with_details(json!({ "nextChangeAt": next_change_at })));
+    }
+
+    Ok(())
 }
 
 pub async fn set_avatar(

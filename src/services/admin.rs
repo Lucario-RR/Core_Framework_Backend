@@ -1,14 +1,19 @@
+use std::collections::HashSet;
+
 use chrono::{Duration, Utc};
 use serde_json::json;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
     api::contracts::{
         Acknowledgement, AdminInvitationCode, AdminInvitationCreateRequest,
-        AdminInvitationCreateResponse, AdminOverview, AdminSystemSetting,
+        AdminInvitationCreateResponse, AdminInvitationListQuery, AdminInvitationRevokeRequest,
+        AdminInvitationSummary, AdminOverview, AdminRoleAssignmentRequest, AdminSystemSetting,
         AdminSystemSettingUpdateRequest, AdminUserBulkActionRequest, AdminUserCreateRequest,
         AdminUserCreateResponse, AdminUserSummary, AdminUserUpdateRequest, EmailAddress,
-        PasswordPolicy, RegisterRequest, RoleDefinition, SessionBulkRevokeRequest,
+        PasswordPolicy, PermissionDefinition, RegisterRequest, RoleCreateRequest, RoleDefinition,
+        RoleUpdateRequest, SessionBulkRevokeRequest,
     },
     auth::{self, AuthContext},
     error::{AppError, AppResult},
@@ -20,6 +25,213 @@ use crate::{
 
 pub async fn list_roles(state: &AppState) -> AppResult<Vec<RoleDefinition>> {
     shared::list_roles(&state.pool).await
+}
+
+pub async fn list_permissions(state: &AppState) -> AppResult<Vec<PermissionDefinition>> {
+    shared::list_permissions(&state.pool).await
+}
+
+pub async fn create_role(
+    state: &AppState,
+    actor: &AuthContext,
+    context: &RequestContext,
+    request: RoleCreateRequest,
+) -> AppResult<RoleDefinition> {
+    let code = normalize_role_code(&request.code)?;
+    let name = validate_role_name(&request.name)?;
+    let permission_codes = normalize_permission_codes(request.permission_codes.unwrap_or_default());
+    ensure_permission_codes_exist(&state.pool, &permission_codes).await?;
+
+    let exists =
+        sqlx::query_scalar::<_, bool>("select exists (select 1 from iam.role where code = $1)")
+            .bind(&code)
+            .fetch_one(&state.pool)
+            .await?;
+    if exists {
+        return Err(AppError::conflict("role code already exists"));
+    }
+
+    let mut tx = state.pool.begin().await?;
+    let role_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        insert into iam.role (
+            id, code, name, description, is_system_role, requires_mfa, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, false, $5, now(), now())
+        "#,
+    )
+    .bind(role_id)
+    .bind(&code)
+    .bind(&name)
+    .bind(sanitize_nullable_text(request.description))
+    .bind(request.requires_mfa.unwrap_or(false))
+    .execute(&mut *tx)
+    .await?;
+
+    replace_role_permissions(&mut tx, role_id, &permission_codes).await?;
+    tx.commit().await?;
+
+    shared::record_audit_log(
+        &state.pool,
+        Some(actor.account_id),
+        "admin.role.created",
+        "role",
+        Some(role_id),
+        Some("Administrator created a role.".to_string()),
+        json!({ "roleCode": code, "permissionCodes": permission_codes }),
+        Some(&context.request_id),
+    )
+    .await?;
+
+    shared::load_role(&state.pool, &code).await
+}
+
+pub async fn update_role(
+    state: &AppState,
+    actor: &AuthContext,
+    context: &RequestContext,
+    role_code: &str,
+    request: RoleUpdateRequest,
+) -> AppResult<RoleDefinition> {
+    let code = normalize_role_code(role_code)?;
+    let role = shared::load_role(&state.pool, &code).await?;
+    let permissions_requested = request.permission_codes.is_some();
+    if role.is_system_role && (permissions_requested || request.requires_mfa.is_some()) {
+        return Err(AppError::forbidden(
+            "system role security settings cannot be edited through this endpoint",
+        ));
+    }
+
+    let permission_codes = request
+        .permission_codes
+        .map(normalize_permission_codes)
+        .unwrap_or_else(|| role.permission_codes.clone());
+    ensure_permission_codes_exist(&state.pool, &permission_codes).await?;
+    let name = request
+        .name
+        .as_deref()
+        .map(validate_role_name)
+        .transpose()?;
+
+    let mut tx = state.pool.begin().await?;
+    let role_id = sqlx::query_scalar::<_, Uuid>("select id from iam.role where code = $1")
+        .bind(&code)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::not_found("role not found"))?;
+
+    sqlx::query(
+        r#"
+        update iam.role
+        set name = coalesce($2, name),
+            description = case when $3::text is null then description else $3 end,
+            requires_mfa = coalesce($4, requires_mfa),
+            updated_at = now()
+        where id = $1
+        "#,
+    )
+    .bind(role_id)
+    .bind(name)
+    .bind(request.description.map(|value| value.trim().to_string()))
+    .bind(request.requires_mfa)
+    .execute(&mut *tx)
+    .await?;
+
+    if permissions_requested {
+        replace_role_permissions(&mut tx, role_id, &permission_codes).await?;
+    }
+
+    tx.commit().await?;
+
+    shared::record_audit_log(
+        &state.pool,
+        Some(actor.account_id),
+        "admin.role.updated",
+        "role",
+        Some(role_id),
+        Some("Administrator updated a role.".to_string()),
+        json!({ "roleCode": code, "permissionCodes": permission_codes }),
+        Some(&context.request_id),
+    )
+    .await?;
+
+    shared::load_role(&state.pool, &code).await
+}
+
+pub async fn delete_role(
+    state: &AppState,
+    actor: &AuthContext,
+    context: &RequestContext,
+    role_code: &str,
+) -> AppResult<Acknowledgement> {
+    let code = normalize_role_code(role_code)?;
+    if matches!(code.as_str(), "admin" | "user") {
+        return Err(AppError::forbidden(
+            "admin and user roles cannot be deleted",
+        ));
+    }
+
+    let row = sqlx::query(
+        r#"
+        select id
+        from iam.role
+        where code = $1
+          and deleted_at is null
+        "#,
+    )
+    .bind(&code)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("role not found"))?;
+    let role_id: Uuid = row.try_get("id")?;
+
+    let mut tx = state.pool.begin().await?;
+    let expired_assignments = sqlx::query(
+        r#"
+        update iam.account_role
+        set expires_at = now()
+        where role_id = $1
+          and (expires_at is null or expires_at > now())
+        "#,
+    )
+    .bind(role_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    sqlx::query(
+        r#"
+        update iam.role
+        set deleted_at = now(),
+            updated_at = now()
+        where id = $1
+          and deleted_at is null
+        "#,
+    )
+    .bind(role_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    shared::record_audit_log(
+        &state.pool,
+        Some(actor.account_id),
+        "admin.role.deleted",
+        "role",
+        Some(role_id),
+        Some("Administrator deleted a role and expired active assignments.".to_string()),
+        json!({ "roleCode": code, "expiredAssignmentCount": expired_assignments }),
+        Some(&context.request_id),
+    )
+    .await?;
+
+    Ok(Acknowledgement {
+        status: "ok".to_string(),
+        message: Some(format!(
+            "Role deleted; {expired_assignments} active assignment(s) expired."
+        )),
+    })
 }
 
 pub async fn admin_overview(state: &AppState) -> AppResult<AdminOverview> {
@@ -39,6 +251,16 @@ pub async fn create_admin_invitations(
     }
 
     let count = request.count.unwrap_or(1).clamp(1, 100);
+    let provided_code = request
+        .code
+        .as_deref()
+        .map(validate_invitation_code)
+        .transpose()?;
+    if provided_code.is_some() && count != 1 {
+        return Err(AppError::validation(
+            "a custom invitation code can only be used when count is 1",
+        ));
+    }
     let max_uses = request.max_uses.unwrap_or(1).clamp(1, 100_000);
     let email = request
         .email
@@ -71,7 +293,21 @@ pub async fn create_admin_invitations(
     let mut invitations = Vec::new();
     for _ in 0..count {
         let id = Uuid::new_v4();
-        let code = format!("inv_{}", auth::generate_token(24));
+        let code = provided_code
+            .clone()
+            .unwrap_or_else(|| format!("inv_{}", auth::generate_token(24)));
+        let code_hash = auth::sha256_hex(&code);
+        if provided_code.is_some() {
+            let exists = sqlx::query_scalar::<_, bool>(
+                "select exists (select 1 from auth.registration_invite where invite_code_hash = $1)",
+            )
+            .bind(&code_hash)
+            .fetch_one(&state.pool)
+            .await?;
+            if exists {
+                return Err(AppError::conflict("invitation code already exists"));
+            }
+        }
         let created_at = Utc::now();
 
         sqlx::query(
@@ -86,7 +322,7 @@ pub async fn create_admin_invitations(
         .bind(id)
         .bind(email.as_deref())
         .bind(normalized_email.as_deref())
-        .bind(auth::sha256_hex(&code))
+        .bind(code_hash)
         .bind(json!(&role_codes))
         .bind(expires_at)
         .bind(max_uses)
@@ -124,6 +360,118 @@ pub async fn create_admin_invitations(
     .await?;
 
     Ok(AdminInvitationCreateResponse { invitations })
+}
+
+pub async fn list_admin_invitations(
+    state: &AppState,
+    query: AdminInvitationListQuery,
+    offset: i64,
+    limit: i64,
+) -> AppResult<(Vec<AdminInvitationSummary>, Option<String>)> {
+    let status = query
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+
+    let rows = sqlx::query(
+        r#"
+        select *
+        from (
+            select
+                id,
+                email,
+                role_codes_json,
+                case
+                    when revoked_at is not null then 'revoked'
+                    when status = 'active' and expires_at is not null and expires_at <= now() then 'expired'
+                    else status
+                end as effective_status,
+                max_uses,
+                use_count,
+                expires_at,
+                consumed_at,
+                last_used_at,
+                revoked_at,
+                created_by_account_id,
+                created_at
+            from auth.registration_invite
+        ) invites
+        where ($1::text is null or effective_status = $1)
+        order by created_at desc
+        offset $2
+        limit $3
+        "#,
+    )
+    .bind(status)
+    .bind(offset)
+    .bind(limit + 1)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let next_cursor = has_more.then(|| crate::utils::encode_offset_cursor(offset + limit));
+    let invitations = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(invitation_summary_from_row)
+        .collect::<AppResult<Vec<_>>>()?;
+
+    Ok((invitations, next_cursor))
+}
+
+pub async fn revoke_admin_invitation(
+    state: &AppState,
+    actor: &AuthContext,
+    context: &RequestContext,
+    invitation_id: Uuid,
+    request: AdminInvitationRevokeRequest,
+) -> AppResult<Acknowledgement> {
+    let current_status = sqlx::query_scalar::<_, String>(
+        r#"
+        select status
+        from auth.registration_invite
+        where id = $1
+        "#,
+    )
+    .bind(invitation_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("invitation not found"))?;
+
+    if current_status == "consumed" {
+        return Err(AppError::conflict("consumed invitations cannot be revoked"));
+    }
+
+    sqlx::query(
+        r#"
+        update auth.registration_invite
+        set status = 'revoked',
+            revoked_at = coalesce(revoked_at, now())
+        where id = $1
+        "#,
+    )
+    .bind(invitation_id)
+    .execute(&state.pool)
+    .await?;
+
+    shared::record_audit_log(
+        &state.pool,
+        Some(actor.account_id),
+        "admin.invitation.revoked",
+        "registration_invite",
+        Some(invitation_id),
+        Some("Administrator revoked an invitation code.".to_string()),
+        json!({ "reason": request.reason }),
+        Some(&context.request_id),
+    )
+    .await?;
+
+    Ok(Acknowledgement {
+        status: "ok".to_string(),
+        message: Some("Invitation revoked.".to_string()),
+    })
 }
 
 pub async fn get_password_policy(state: &AppState) -> AppResult<PasswordPolicy> {
@@ -215,8 +563,10 @@ pub async fn list_admin_users(
             join iam.account_profile p on p.account_id = a.id
             left join iam.account_email ae on ae.account_id = a.id and ae.is_primary_for_account = true and ae.deleted_at is null
             left join iam.account_phone ap on ap.account_id = a.id and ap.is_primary_for_account = true and ap.deleted_at is null
-            left join iam.account_role ar on ar.account_id = a.id
-            left join iam.role r on r.id = ar.role_id
+            left join iam.account_role ar
+                on ar.account_id = a.id
+               and (ar.expires_at is null or ar.expires_at > now())
+            left join iam.role r on r.id = ar.role_id and r.deleted_at is null
             where ($1::text is null
                    or lower(coalesce(p.display_name, '')) ilike $1
                    or lower(coalesce(a.public_handle, '')) ilike $1
@@ -263,20 +613,12 @@ pub async fn create_admin_user(
     context: &RequestContext,
     request: AdminUserCreateRequest,
 ) -> AppResult<AdminUserCreateResponse> {
-    let username = request
-        .username
-        .as_deref()
-        .map(validate_username)
-        .transpose()?;
+    let username = validate_username(&request.username)?;
     let initial_password = match request.password {
         Some(password) if !password.trim().is_empty() => password,
         _ => {
-            auth_service::generate_initial_password(
-                &state.pool,
-                username.as_deref(),
-                &request.email,
-            )
-            .await?
+            auth_service::generate_initial_password(&state.pool, Some(&username), &request.email)
+                .await?
         }
     };
     let requested_status = request.account_status.clone();
@@ -289,18 +631,17 @@ pub async fn create_admin_user(
         invitation_code: None,
         accepted_legal_documents: Vec::new(),
     };
-    let role_codes = request
-        .role_codes
-        .unwrap_or_else(|| vec!["user".to_string()])
-        .into_iter()
-        .map(|role| role.trim().to_ascii_lowercase())
-        .filter(|role| !role.is_empty())
+    if request.role_codes.is_some() && request.role_assignments.is_some() {
+        return Err(AppError::validation(
+            "provide either roleCodes or roleAssignments, not both",
+        ));
+    }
+    let role_assignments =
+        normalize_role_assignments(request.role_assignments, request.role_codes, true)?;
+    let role_codes = role_assignments
+        .iter()
+        .map(|assignment| assignment.role_code.clone())
         .collect::<Vec<_>>();
-    let role_codes = if role_codes.is_empty() {
-        vec!["user".to_string()]
-    } else {
-        role_codes
-    };
     ensure_role_codes_exist(&state.pool, &role_codes).await?;
     let initial_status = match requested_status.as_deref() {
         Some("pending") => Some("pending".to_string()),
@@ -315,6 +656,14 @@ pub async fn create_admin_user(
         initial_status,
         None,
         false,
+    )
+    .await?;
+
+    apply_role_assignment_expiries(
+        &state.pool,
+        created.account_id,
+        actor.account_id,
+        &role_assignments,
     )
     .await?;
 
@@ -361,6 +710,7 @@ pub async fn update_admin_user(
             r#"
             update iam.account
             set public_handle = $2,
+                username_changed_at = now(),
                 updated_at = now()
             where id = $1
             "#,
@@ -407,29 +757,43 @@ pub async fn update_admin_user(
         upsert_admin_primary_phone(&mut tx, account_id, primary_phone).await?;
     }
 
-    if let Some(role_codes) = request.role_codes.as_ref() {
-        let role_codes = role_codes
+    if request.role_codes.is_some() && request.role_assignments.is_some() {
+        return Err(AppError::validation(
+            "provide either roleCodes or roleAssignments, not both",
+        ));
+    }
+
+    if request.role_codes.is_some() || request.role_assignments.is_some() {
+        let role_assignments = normalize_role_assignments(
+            request.role_assignments.clone(),
+            request.role_codes.clone(),
+            false,
+        )?;
+        let role_codes = role_assignments
             .iter()
-            .map(|role| role.trim().to_ascii_lowercase())
-            .filter(|role| !role.is_empty())
+            .map(|assignment| assignment.role_code.clone())
             .collect::<Vec<_>>();
         ensure_role_codes_exist(&state.pool, &role_codes).await?;
         sqlx::query("delete from iam.account_role where account_id = $1")
             .bind(account_id)
             .execute(&mut *tx)
             .await?;
-        for role_code in &role_codes {
+        for assignment in &role_assignments {
             sqlx::query(
                 r#"
-                insert into iam.account_role (account_id, role_id, granted_by_account_id, granted_at)
-                select $1, id, $2, now()
+                insert into iam.account_role (
+                    account_id, role_id, granted_by_account_id, granted_at, expires_at
+                )
+                select $1, id, $2, now(), $4
                 from iam.role
                 where code = $3
+                  and deleted_at is null
                 "#,
             )
             .bind(account_id)
             .bind(actor.account_id)
-            .bind(role_code)
+            .bind(&assignment.role_code)
+            .bind(assignment.expires_at.as_ref().cloned())
             .execute(&mut *tx)
             .await?;
         }
@@ -811,6 +1175,259 @@ pub async fn update_system_setting(
     shared::load_system_setting(&state.pool, setting_key).await
 }
 
+fn invitation_summary_from_row(row: sqlx::postgres::PgRow) -> AppResult<AdminInvitationSummary> {
+    let role_codes_json: serde_json::Value = row.try_get("role_codes_json")?;
+    let role_codes = role_codes_json
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let max_uses: i32 = row.try_get("max_uses")?;
+    let use_count: i32 = row.try_get("use_count")?;
+
+    Ok(AdminInvitationSummary {
+        id: row.try_get("id")?,
+        email: row.try_get("email")?,
+        role_codes,
+        status: row.try_get("effective_status")?,
+        max_uses,
+        use_count,
+        remaining_uses: (max_uses - use_count).max(0),
+        expires_at: row.try_get("expires_at")?,
+        consumed_at: row.try_get("consumed_at")?,
+        last_used_at: row.try_get("last_used_at")?,
+        revoked_at: row.try_get("revoked_at")?,
+        created_by_account_id: row.try_get("created_by_account_id")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+fn validate_invitation_code(code: &str) -> AppResult<String> {
+    let trimmed = code.trim();
+    if trimmed.len() < 6 || trimmed.len() > 128 {
+        return Err(AppError::validation(
+            "invitation code must be between 6 and 128 characters",
+        ));
+    }
+    if !trimmed.chars().all(|ch| ch.is_ascii_graphic()) {
+        return Err(AppError::validation(
+            "invitation code may only contain visible ASCII characters without spaces",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_role_code(role_code: &str) -> AppResult<String> {
+    let code = role_code.trim().to_ascii_lowercase();
+    if code.len() < 2 || code.len() > 40 {
+        return Err(AppError::validation(
+            "roleCode must be between 2 and 40 characters",
+        ));
+    }
+    if !code
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        return Err(AppError::validation(
+            "roleCode may contain only letters, numbers, underscores, and hyphens",
+        ));
+    }
+    Ok(code)
+}
+
+fn validate_role_name(name: &str) -> AppResult<String> {
+    let trimmed = name.trim();
+    if trimmed.len() < 2 || trimmed.len() > 80 {
+        return Err(AppError::validation(
+            "role name must be between 2 and 80 characters",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn sanitize_nullable_text(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn normalize_permission_codes(permission_codes: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for permission_code in permission_codes {
+        let permission_code = permission_code.trim().to_ascii_lowercase();
+        if !permission_code.is_empty() && seen.insert(permission_code.clone()) {
+            normalized.push(permission_code);
+        }
+    }
+    normalized
+}
+
+fn normalize_role_assignments(
+    role_assignments: Option<Vec<AdminRoleAssignmentRequest>>,
+    role_codes: Option<Vec<String>>,
+    default_to_user: bool,
+) -> AppResult<Vec<AdminRoleAssignmentRequest>> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(assignments) = role_assignments {
+        for assignment in assignments {
+            let role_code = normalize_role_code(&assignment.role_code)?;
+            if !seen.insert(role_code.clone()) {
+                return Err(AppError::validation(
+                    "duplicate roleCode in roleAssignments",
+                ));
+            }
+            if assignment
+                .expires_at
+                .as_ref()
+                .map(|expires_at| expires_at <= &Utc::now())
+                .unwrap_or(false)
+            {
+                return Err(AppError::validation("role expiresAt must be in the future"));
+            }
+            normalized.push(AdminRoleAssignmentRequest {
+                role_code,
+                expires_at: assignment.expires_at,
+            });
+        }
+    } else {
+        let role_codes = role_codes.unwrap_or_else(|| {
+            if default_to_user {
+                vec!["user".to_string()]
+            } else {
+                Vec::new()
+            }
+        });
+        for role_code in role_codes {
+            let role_code = normalize_role_code(&role_code)?;
+            if seen.insert(role_code.clone()) {
+                normalized.push(AdminRoleAssignmentRequest {
+                    role_code,
+                    expires_at: None,
+                });
+            }
+        }
+    }
+
+    if normalized.is_empty() {
+        return Err(AppError::validation("at least one role is required"));
+    }
+
+    Ok(normalized)
+}
+
+async fn apply_role_assignment_expiries(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    actor_account_id: Uuid,
+    assignments: &[AdminRoleAssignmentRequest],
+) -> AppResult<()> {
+    for assignment in assignments
+        .iter()
+        .filter(|assignment| assignment.expires_at.is_some())
+    {
+        sqlx::query(
+            r#"
+            update iam.account_role ar
+            set expires_at = $4,
+                granted_by_account_id = $2
+            from iam.role r
+            where ar.role_id = r.id
+              and ar.account_id = $1
+              and r.code = $3
+              and r.deleted_at is null
+            "#,
+        )
+        .bind(account_id)
+        .bind(actor_account_id)
+        .bind(&assignment.role_code)
+        .bind(assignment.expires_at.as_ref().cloned())
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn replace_role_permissions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    role_id: Uuid,
+    permission_codes: &[String],
+) -> AppResult<()> {
+    sqlx::query("delete from iam.role_permission where role_id = $1")
+        .bind(role_id)
+        .execute(&mut **tx)
+        .await?;
+
+    for permission_code in permission_codes {
+        sqlx::query(
+            r#"
+            insert into iam.role_permission (role_id, permission_id, granted_at)
+            select $1, id, now()
+            from iam.permission
+            where code = $2
+            "#,
+        )
+        .bind(role_id)
+        .bind(permission_code)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_permission_codes_exist(
+    pool: &sqlx::PgPool,
+    permission_codes: &[String],
+) -> AppResult<()> {
+    if permission_codes.is_empty() {
+        return Ok(());
+    }
+
+    let existing = sqlx::query_scalar::<_, String>(
+        r#"
+        select code
+        from iam.permission
+        where code = any($1::text[])
+        "#,
+    )
+    .bind(permission_codes.to_vec())
+    .fetch_all(pool)
+    .await?;
+
+    let missing = permission_codes
+        .iter()
+        .filter(|permission_code| {
+            !existing
+                .iter()
+                .any(|candidate| candidate == *permission_code)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(
+            AppError::validation("one or more permission codes are invalid")
+                .with_details(json!({ "missingPermissionCodes": missing })),
+        )
+    }
+}
+
 async fn ensure_role_codes_exist(pool: &sqlx::PgPool, role_codes: &[String]) -> AppResult<()> {
     let requested = role_codes
         .iter()
@@ -826,6 +1443,7 @@ async fn ensure_role_codes_exist(pool: &sqlx::PgPool, role_codes: &[String]) -> 
         select code
         from iam.role
         where code = any($1::text[])
+          and deleted_at is null
         "#,
     )
     .bind(requested.clone())

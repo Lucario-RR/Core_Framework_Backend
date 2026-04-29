@@ -27,10 +27,15 @@ MFA login behavior:
 
 Login, invitation, and password-policy behavior:
 
-- `/auth/login` accepts a preferred `login` field that can contain username, email address, or login-enabled phone number; legacy `email` and `username` fields are still accepted
-- `/auth/register` accepts optional `username` and `invitationCode`; when `registration.invite_only` is true, a valid invitation code is required and its role list is applied to the new account
+- `/auth/login` accepts a preferred `login` field that can contain username, email address, or login-enabled phone number; explicit `username`, `email`, `phoneNumber`, and `phone` alias fields are also accepted
+- `/auth/register` requires a unique `username` and accepts optional `invitationCode`; when `registration.invite_only` is true, a valid invitation code is required and its role list is applied to the new account
+- `PATCH /me` can update the username; self-service username changes are rate-limited by `account.username.change_cooldown_seconds`
 - `GET /auth/password/policy` returns the active password rules for frontend precheck; the backend enforces the same policy on registration, admin-created accounts, password change, and password reset
-- admins can create invitation codes with `POST /admin/invitations`, including multi-use and no-expiry codes, and can manage the password policy through `/admin/password-policy`
+- admins can list, create, and revoke invitation codes through `/admin/invitations`; creation supports single-use, multi-use, generated codes, admin-provided codes, and no-expiry codes
+- admins can create, edit, and delete custom roles through `/admin/roles`, read assignable permissions through `/admin/permissions`, and set per-user role expiry with `roleAssignments[].expiresAt`; deleting a role expires active assignments, while `admin` and `user` are protected
+- admins can create accounts as `active` or `pending`; pending accounts are treated as waiting for activation and cannot log in until activated
+- user settings are already covered by `/me`, `/me/avatar`, `/me/emails`, and `/me/phones`; phone changes remain verification-based through the phone create, verify, and make-primary flow
+- admins can manage the password policy through `/admin/password-policy`
 - `POST /admin/users` now returns a one-time `initialPassword` and copy-ready `accountText` so the frontend can offer download/copy actions after account creation
 
 This companion note explains what changed:
@@ -68,6 +73,6 @@ Retained in the canonical API contract:
 - cookie preference endpoints
 - admin user management
 - admin settings and overview
-- admin roles, security events, audit logs, and per-user session/security inspection
+- admin invitation, role, user-settings, security event, audit log, and per-user session/security inspection
 
 If this Markdown guide and the OpenAPI file ever disagree, treat [API_Documentation.openapi.yaml](API_Documentation.openapi.yaml) as the source of truth.

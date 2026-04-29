@@ -34,7 +34,7 @@ pub struct LegalDocumentAcceptance {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegisterRequest {
-    pub username: Option<String>,
+    pub username: String,
     pub email: String,
     pub password: String,
     pub display_name: String,
@@ -49,6 +49,8 @@ pub struct LoginRequest {
     pub login: Option<String>,
     pub email: Option<String>,
     pub username: Option<String>,
+    #[serde(alias = "phone")]
+    pub phone_number: Option<String>,
     pub password: String,
     pub remember_me: Option<bool>,
 }
@@ -117,6 +119,7 @@ pub struct AuthSession {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileUpdateRequest {
+    pub username: Option<String>,
     pub display_name: Option<String>,
     pub default_currency: Option<String>,
     pub locale: Option<String>,
@@ -387,6 +390,7 @@ pub struct AdminUserSummary {
     pub primary_email: String,
     pub primary_phone: Option<String>,
     pub roles: Vec<String>,
+    pub role_assignments: Vec<AdminUserRoleAssignment>,
     pub scopes: Vec<String>,
     pub locale: String,
     pub timezone_name: String,
@@ -406,12 +410,13 @@ pub struct AdminUserSummary {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdminUserCreateRequest {
-    pub username: Option<String>,
+    pub username: String,
     pub email: String,
     pub password: Option<String>,
     pub display_name: String,
     pub primary_phone: Option<String>,
     pub role_codes: Option<Vec<String>>,
+    pub role_assignments: Option<Vec<AdminRoleAssignmentRequest>>,
     pub account_status: Option<String>,
 }
 
@@ -431,6 +436,7 @@ pub struct AdminUserUpdateRequest {
     pub primary_email: Option<String>,
     pub primary_phone: Option<String>,
     pub role_codes: Option<Vec<String>>,
+    pub role_assignments: Option<Vec<AdminRoleAssignmentRequest>>,
     pub account_status: Option<String>,
     pub require_password_change: Option<bool>,
     pub require_mfa_enrollment: Option<bool>,
@@ -440,6 +446,22 @@ pub struct AdminUserUpdateRequest {
     pub timezone_name: Option<String>,
     pub profile_bio: Option<String>,
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdminRoleAssignmentRequest {
+    pub role_code: String,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminUserRoleAssignment {
+    pub role_code: String,
+    pub role_name: String,
+    pub granted_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -476,6 +498,7 @@ pub struct AdminSystemSettingUpdateRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdminInvitationCreateRequest {
     pub count: Option<i32>,
+    pub code: Option<String>,
     pub email: Option<String>,
     pub role_codes: Option<Vec<String>>,
     pub max_uses: Option<i32>,
@@ -499,6 +522,38 @@ pub struct AdminInvitationCode {
 #[serde(rename_all = "camelCase")]
 pub struct AdminInvitationCreateResponse {
     pub invitations: Vec<AdminInvitationCode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminInvitationSummary {
+    pub id: Uuid,
+    pub email: Option<String>,
+    pub role_codes: Vec<String>,
+    pub status: String,
+    pub max_uses: i32,
+    pub use_count: i32,
+    pub remaining_uses: i32,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub consumed_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_by_account_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminInvitationListQuery {
+    pub status: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdminInvitationRevokeRequest {
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -612,8 +667,36 @@ pub struct RoleDefinition {
     pub code: String,
     pub name: String,
     pub description: Option<String>,
+    pub is_system_role: bool,
     pub requires_mfa: bool,
     pub permission_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionDefinition {
+    pub code: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RoleCreateRequest {
+    pub code: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub requires_mfa: Option<bool>,
+    pub permission_codes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RoleUpdateRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub requires_mfa: Option<bool>,
+    pub permission_codes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

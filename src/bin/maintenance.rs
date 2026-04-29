@@ -12,6 +12,7 @@ use core_framework_backend::{
     error::{AppError, AppResult},
     request_context::RequestContext,
     services::{auth as auth_service, shared, user as user_service},
+    utils::validate_username,
     AppState, MIGRATOR,
 };
 
@@ -75,6 +76,7 @@ impl Command {
 }
 
 struct CreateAdminArgs {
+    username: String,
     email: String,
     password: String,
     display_name: String,
@@ -92,6 +94,7 @@ struct ListUsersArgs {
 
 struct CreatedAdmin {
     account_id: Uuid,
+    username: String,
     email: String,
     display_name: String,
     roles: Vec<String>,
@@ -123,6 +126,7 @@ fn parse_command() -> AppResult<Command> {
 
 fn parse_create_admin_args(args: &[String]) -> AppResult<Command> {
     let mut email = None;
+    let mut username = None;
     let mut password = env::var("MAINTENANCE_ADMIN_PASSWORD").ok();
     let mut display_name = None;
     let mut primary_phone = None;
@@ -135,6 +139,7 @@ fn parse_create_admin_args(args: &[String]) -> AppResult<Command> {
     while index < args.len() {
         match args[index].as_str() {
             "--email" => email = Some(next_value(args, &mut index, "--email")?),
+            "--username" => username = Some(next_value(args, &mut index, "--username")?),
             "--password" => password = Some(next_value(args, &mut index, "--password")?),
             "--display-name" => {
                 display_name = Some(next_value(args, &mut index, "--display-name")?)
@@ -151,10 +156,16 @@ fn parse_create_admin_args(args: &[String]) -> AppResult<Command> {
     }
 
     let email = required_arg(email, "--email")?;
+    let username = validate_username(
+        username
+            .unwrap_or_else(|| default_username_from_email(&email))
+            .as_str(),
+    )?;
     let password = required_arg(password, "--password or MAINTENANCE_ADMIN_PASSWORD")?;
     let display_name = display_name.unwrap_or_else(|| "Maintenance Admin".to_string());
 
     Ok(Command::CreateAdmin(CreateAdminArgs {
+        username,
         email,
         password,
         display_name,
@@ -209,6 +220,22 @@ fn required_arg(value: Option<String>, label: &str) -> AppResult<String> {
         .ok_or_else(|| AppError::validation(format!("missing required argument {label}")))
 }
 
+fn default_username_from_email(email: &str) -> String {
+    email
+        .split('@')
+        .next()
+        .unwrap_or("admin")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 async fn create_admin(state: &AppState, args: CreateAdminArgs) -> AppResult<CreatedAdmin> {
     let context = RequestContext {
         request_id: format!("maintenance_{}", Uuid::new_v4().simple()),
@@ -217,7 +244,7 @@ async fn create_admin(state: &AppState, args: CreateAdminArgs) -> AppResult<Crea
     };
     let legal_documents = current_legal_documents(&state.pool).await?;
     let request = RegisterRequest {
-        username: None,
+        username: args.username.clone(),
         email: args.email.clone(),
         password: args.password,
         display_name: args.display_name.clone(),
@@ -268,6 +295,7 @@ async fn create_admin(state: &AppState, args: CreateAdminArgs) -> AppResult<Crea
 
     Ok(CreatedAdmin {
         account_id: summary.id,
+        username: summary.username.unwrap_or_default(),
         email: summary.primary_email,
         display_name: summary.display_name,
         roles: summary.roles,
@@ -424,6 +452,7 @@ async fn list_users(state: &AppState, args: ListUsersArgs) -> AppResult<()> {
         r#"
         select
             a.id,
+            a.public_handle as username,
             a.status_code,
             a.created_at,
             p.display_name,
@@ -436,8 +465,8 @@ async fn list_users(state: &AppState, args: ListUsersArgs) -> AppResult<()> {
          and ae.is_primary_for_account = true
          and ae.deleted_at is null
         left join iam.account_role ar on ar.account_id = a.id
-        left join iam.role r on r.id = ar.role_id
-        group by a.id, a.status_code, a.created_at, p.display_name, ae.email
+        left join iam.role r on r.id = ar.role_id and r.deleted_at is null
+        group by a.id, a.public_handle, a.status_code, a.created_at, p.display_name, ae.email
         order by a.created_at desc
         limit $1
         "#,
@@ -447,15 +476,18 @@ async fn list_users(state: &AppState, args: ListUsersArgs) -> AppResult<()> {
     .await?;
 
     println!("Recent users:");
-    println!("id | email | status | roles | display_name | created_at");
+    println!("id | username | email | status | roles | display_name | created_at");
     for row in rows {
         let id: Uuid = row.try_get("id")?;
+        let username: String = row.try_get("username")?;
         let email: String = row.try_get("email")?;
         let status: String = row.try_get("status_code")?;
         let roles: String = row.try_get("roles")?;
         let display_name: String = row.try_get("display_name")?;
         let created_at: DateTime<Utc> = row.try_get("created_at")?;
-        println!("{id} | {email} | {status} | {roles} | {display_name} | {created_at}");
+        println!(
+            "{id} | {username} | {email} | {status} | {roles} | {display_name} | {created_at}"
+        );
     }
     Ok(())
 }
@@ -463,6 +495,7 @@ async fn list_users(state: &AppState, args: ListUsersArgs) -> AppResult<()> {
 fn print_created_admin(admin: &CreatedAdmin) {
     println!("Created administrator account");
     println!("Account ID: {}", admin.account_id);
+    println!("Username: {}", admin.username);
     println!("Email: {}", admin.email);
     println!("Display name: {}", admin.display_name);
     println!("Roles: {}", admin.roles.join(", "));
@@ -494,11 +527,12 @@ fn print_usage() {
         r#"Maintenance tool
 
 Commands:
-  create-admin --email <email> --display-name <name> [--password <password>]
+  create-admin --email <email> --display-name <name> [--username <username>] [--password <password>]
   list-users [--limit <1-100>]
 
 create-admin options:
   --email <email>             Email used to log in.
+  --username <username>       Unique username. Defaults to the email local-part.
   --password <password>       Initial password. You can use MAINTENANCE_ADMIN_PASSWORD instead.
   --display-name <name>       Display name for the account.
   --phone <e164>              Optional primary phone number.

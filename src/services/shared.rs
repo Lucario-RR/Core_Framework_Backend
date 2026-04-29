@@ -6,8 +6,8 @@ use uuid::Uuid;
 use crate::{
     api::contracts::{
         AdminSecurityEvent, AdminSystemSetting, AdminUserSummary, AuditLogEntry, EmailAddress,
-        FileRecord, Passkey, PhoneNumber, RoleDefinition, SecurityEvent, Session, UserProfile,
-        UserSecuritySummary,
+        FileRecord, Passkey, PermissionDefinition, PhoneNumber, RoleDefinition, SecurityEvent,
+        Session, UserProfile, UserSecuritySummary,
     },
     auth,
     error::{AppError, AppResult},
@@ -17,6 +17,7 @@ use crate::{
 const EFFECTIVE_STATUS_SQL: &str = r#"
 case
     when a.deleted_at is not null or a.status_code = 'deleted' then 'deleted'
+    when a.status_code = 'pending' then 'pending'
     when exists (
         select 1
         from iam.account_restriction ar
@@ -180,6 +181,14 @@ struct SystemSettingRow {
     value: Value,
     updated_at: Option<DateTime<Utc>>,
     updated_by_account_id: Option<Uuid>,
+}
+
+#[derive(Debug, FromRow)]
+struct RoleAssignmentRow {
+    role_code: String,
+    role_name: String,
+    granted_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
 }
 
 pub async fn get_global_setting_value(pool: &PgPool, key: &str) -> AppResult<Value> {
@@ -566,6 +575,7 @@ pub async fn load_admin_user_summary(
     let phones = load_phone_numbers(pool, account_id).await?;
     let security = load_security_summary(pool, account_id).await?;
     let (roles, scopes) = auth::load_session_roles_and_scopes(pool, account_id).await?;
+    let role_assignments = load_account_role_assignments(pool, account_id).await?;
 
     let primary_email = emails
         .iter()
@@ -588,6 +598,7 @@ pub async fn load_admin_user_summary(
         primary_email,
         primary_phone,
         roles,
+        role_assignments,
         scopes,
         locale: base.locale,
         timezone_name: base.timezone_name,
@@ -1022,8 +1033,9 @@ pub async fn load_file_record(
 pub async fn list_roles(pool: &PgPool) -> AppResult<Vec<RoleDefinition>> {
     let role_rows = sqlx::query(
         r#"
-        select id, code, name, description, requires_mfa
+        select id, code, name, description, is_system_role, requires_mfa
         from iam.role
+        where deleted_at is null
         order by code asc
         "#,
     )
@@ -1050,12 +1062,106 @@ pub async fn list_roles(pool: &PgPool) -> AppResult<Vec<RoleDefinition>> {
             code: row.try_get("code")?,
             name: row.try_get("name")?,
             description: row.try_get("description").ok(),
+            is_system_role: row.try_get("is_system_role")?,
             requires_mfa: row.try_get("requires_mfa")?,
             permission_codes: permissions,
         });
     }
 
     Ok(roles)
+}
+
+pub async fn load_role(pool: &PgPool, role_code: &str) -> AppResult<RoleDefinition> {
+    let row = sqlx::query(
+        r#"
+        select id, code, name, description, is_system_role, requires_mfa
+        from iam.role
+        where code = $1
+          and deleted_at is null
+        "#,
+    )
+    .bind(role_code)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("role not found"))?;
+
+    let role_id: Uuid = row.try_get("id")?;
+    let permissions = sqlx::query_scalar::<_, String>(
+        r#"
+        select p.code
+        from iam.role_permission rp
+        join iam.permission p on p.id = rp.permission_id
+        where rp.role_id = $1
+        order by p.code asc
+        "#,
+    )
+    .bind(role_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(RoleDefinition {
+        code: row.try_get("code")?,
+        name: row.try_get("name")?,
+        description: row.try_get("description").ok(),
+        is_system_role: row.try_get("is_system_role")?,
+        requires_mfa: row.try_get("requires_mfa")?,
+        permission_codes: permissions,
+    })
+}
+
+pub async fn list_permissions(pool: &PgPool) -> AppResult<Vec<PermissionDefinition>> {
+    let rows = sqlx::query(
+        r#"
+        select code, name, description
+        from iam.permission
+        order by code asc
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(PermissionDefinition {
+                code: row.try_get("code")?,
+                name: row.try_get("name")?,
+                description: row.try_get("description").ok(),
+            })
+        })
+        .collect()
+}
+
+pub async fn load_account_role_assignments(
+    pool: &PgPool,
+    account_id: Uuid,
+) -> AppResult<Vec<crate::api::contracts::AdminUserRoleAssignment>> {
+    let rows = sqlx::query_as::<_, RoleAssignmentRow>(
+        r#"
+        select
+            r.code as role_code,
+            r.name as role_name,
+            ar.granted_at,
+            ar.expires_at
+        from iam.account_role ar
+        join iam.role r on r.id = ar.role_id
+        where ar.account_id = $1
+          and r.deleted_at is null
+        order by r.code asc
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| crate::api::contracts::AdminUserRoleAssignment {
+            role_code: row.role_code,
+            role_name: row.role_name,
+            granted_at: row.granted_at,
+            expires_at: row.expires_at,
+        })
+        .collect())
 }
 
 pub async fn list_system_settings(pool: &PgPool) -> AppResult<Vec<AdminSystemSetting>> {
@@ -1170,13 +1276,16 @@ pub async fn count_admin_overview(
         from iam.account_role ar
         join iam.role r on r.id = ar.role_id
         where r.code = 'admin'
+          and (ar.expires_at is null or ar.expires_at > now())
+          and r.deleted_at is null
         "#,
     )
     .fetch_one(pool)
     .await?;
-    let role_count = sqlx::query_scalar::<_, i64>("select count(*) from iam.role")
-        .fetch_one(pool)
-        .await?;
+    let role_count =
+        sqlx::query_scalar::<_, i64>("select count(*) from iam.role where deleted_at is null")
+            .fetch_one(pool)
+            .await?;
     let active_session_count =
         sqlx::query_scalar::<_, i64>("select count(*) from auth.session where revoked_at is null and absolute_expires_at > now()")
             .fetch_one(pool)

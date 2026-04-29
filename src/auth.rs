@@ -390,6 +390,8 @@ pub async fn load_session_roles_and_scopes(
         from iam.account_role ar
         join iam.role r on r.id = ar.role_id
         where ar.account_id = $1
+          and (ar.expires_at is null or ar.expires_at > now())
+          and r.deleted_at is null
         order by r.code
         "#,
     )
@@ -407,8 +409,11 @@ pub async fn load_session_roles_and_scopes(
         select distinct p.code
         from iam.account_role ar
         join iam.role_permission rp on rp.role_id = ar.role_id
+        join iam.role r on r.id = ar.role_id
         join iam.permission p on p.id = rp.permission_id
         where ar.account_id = $1
+          and (ar.expires_at is null or ar.expires_at > now())
+          and r.deleted_at is null
         order by p.code
         "#,
     )

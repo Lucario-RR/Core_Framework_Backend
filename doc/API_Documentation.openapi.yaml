@@ -145,7 +145,7 @@ paths:
         - Auth
       operationId: login
       summary: Authenticate with username, email, or phone and password
-      description: Authenticate a user with the preferred login field, which can contain a username, email address, or login-enabled phone number. If the account already has an active confirmed TOTP factor, the server returns an MFA challenge instead of a session. Policy-only MFA enrollment requirements do not block login; they are returned on successful sessions as user.security.mfaRequired so clients can show a skippable enrollment prompt.
+      description: Authenticate a user with the preferred login field, which can contain a username, email address, or login-enabled phone number. Explicit username, email, phoneNumber, and phone alias fields are also accepted. If the account already has an active confirmed TOTP factor, the server returns an MFA challenge instead of a session. Policy-only MFA enrollment requirements do not block login; they are returned on successful sessions as user.security.mfaRequired so clients can show a skippable enrollment prompt.
       requestBody:
         required: true
         content:
@@ -1342,6 +1342,119 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+    post:
+      tags:
+        - AdminSecurity
+      operationId: createRole
+      summary: Create a custom role
+      description: Create a non-system role such as tenant, volunteer, or staff. Permission codes are optional for non-admin style roles.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleCreateRequest'
+      responses:
+        '201':
+          description: Custom role created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleDefinitionEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/roles/{roleCode}:
+    patch:
+      tags:
+        - AdminSecurity
+      operationId: updateRole
+      summary: Update a role
+      description: Update role display details and, for custom roles, MFA and permission settings.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: roleCode
+          in: path
+          required: true
+          schema:
+            type: string
+          example: volunteer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleUpdateRequest'
+      responses:
+        '200':
+          description: Updated role definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleDefinitionEnvelope'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+        - AdminSecurity
+      operationId: deleteRole
+      summary: Delete a role
+      description: Soft-delete a non-protected role and expire active user assignments. The admin and user roles cannot be deleted.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: roleCode
+          in: path
+          required: true
+          schema:
+            type: string
+          example: volunteer
+      responses:
+        '200':
+          description: Role deleted and active assignments expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/permissions:
+    get:
+      tags:
+        - AdminSecurity
+      operationId: listPermissions
+      summary: List assignable permission codes
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Permission definitions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionDefinitionListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /admin/overview:
     get:
       tags:
@@ -1362,6 +1475,39 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
   /admin/invitations:
+    get:
+      tags:
+        - AdminSettings
+      operationId: listAdminInvitations
+      summary: List registration invitation codes
+      description: Returns invite metadata only. Plain invitation code values are never returned after creation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - active
+              - consumed
+              - expired
+              - revoked
+          example: active
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Invitation metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationSummaryListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     post:
       tags:
         - AdminSettings
@@ -1389,6 +1535,43 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/invitations/{invitationId}/revoke:
+    post:
+      tags:
+        - AdminSettings
+      operationId: revokeAdminInvitation
+      summary: Revoke an invitation code
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Identifier'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminInvitationRevokeRequest'
+      responses:
+        '200':
+          description: Invitation revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /admin/password-policy:
     get:
       tags:
@@ -2161,15 +2344,14 @@ components:
       type: object
       additionalProperties: false
       required:
+        - username
         - email
         - password
         - displayName
         - acceptedLegalDocuments
       properties:
         username:
-          type:
-            - string
-            - 'null'
+          type: string
           minLength: 3
           maxLength: 80
           pattern: ^[a-zA-Z0-9._-]+$
@@ -2227,6 +2409,12 @@ components:
             - string
             - 'null'
           example: alex
+        phoneNumber:
+          description: Explicit phone login field; use login for new clients. The backend also accepts phone as an alias.
+          type:
+            - string
+            - 'null'
+          example: '+447700900123'
         password:
           type: string
           minLength: 1
@@ -2510,6 +2698,13 @@ components:
       type: object
       additionalProperties: false
       properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 80
+          pattern: ^[a-zA-Z0-9._-]+$
+          description: Unique username used for login. Changes are rate-limited by account.username.change_cooldown_seconds.
+          example: alex.price
         displayName:
           type: string
           minLength: 2
@@ -3435,6 +3630,7 @@ components:
         - displayName
         - primaryEmail
         - roles
+        - roleAssignments
         - scopes
         - locale
         - timezoneName
@@ -3473,6 +3669,10 @@ components:
             type: string
           example:
             - user
+        roleAssignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUserRoleAssignment'
         scopes:
           type: array
           items:
@@ -3560,17 +3760,57 @@ components:
             $ref: '#/components/schemas/AdminUserSummary'
         meta:
           $ref: '#/components/schemas/ResponseMeta'
+    AdminUserRoleAssignment:
+      type: object
+      additionalProperties: false
+      required:
+        - roleCode
+        - roleName
+        - grantedAt
+      properties:
+        roleCode:
+          type: string
+          example: volunteer
+        roleName:
+          type: string
+          example: Volunteer
+        grantedAt:
+          type: string
+          format: date-time
+          example: '2026-04-28T10:00:00Z'
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: '2026-10-28T10:00:00Z'
+    AdminRoleAssignmentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - roleCode
+      properties:
+        roleCode:
+          type: string
+          minLength: 2
+          maxLength: 40
+          example: volunteer
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: '2026-10-28T10:00:00Z'
     AdminUserCreateRequest:
       type: object
       additionalProperties: false
       required:
+        - username
         - email
         - displayName
       properties:
         username:
-          type:
-            - string
-            - 'null'
+          type: string
           minLength: 3
           maxLength: 80
           pattern: ^[a-zA-Z0-9._-]+$
@@ -3598,10 +3838,16 @@ components:
           example: '+447700900124'
         roleCodes:
           type: array
+          description: Backward-compatible role assignment without expiry. Do not send together with roleAssignments.
           items:
             type: string
           example:
             - user
+        roleAssignments:
+          type: array
+          description: Role assignments with optional expiry. Do not send together with roleCodes.
+          items:
+            $ref: '#/components/schemas/AdminRoleAssignmentRequest'
         accountStatus:
           type: string
           enum:
@@ -3673,10 +3919,16 @@ components:
           example: '+447700900124'
         roleCodes:
           type: array
+          description: Replaces all user roles without expiry. Do not send together with roleAssignments.
           items:
             type: string
           example:
             - admin
+        roleAssignments:
+          type: array
+          description: Replaces all user role assignments and can set per-role expiry.
+          items:
+            $ref: '#/components/schemas/AdminRoleAssignmentRequest'
         accountStatus:
           type: string
           enum:
@@ -3770,6 +4022,14 @@ components:
           maximum: 100
           default: 1
           example: 3
+        code:
+          type:
+            - string
+            - 'null'
+          minLength: 6
+          maxLength: 128
+          description: Optional admin-provided invitation code. Only allowed when count is 1.
+          example: tenant-launch-2026
         email:
           type:
             - string
@@ -3850,6 +4110,105 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AdminInvitationCode'
+    AdminInvitationSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - roleCodes
+        - status
+        - maxUses
+        - useCount
+        - remainingUses
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Identifier'
+        email:
+          type:
+            - string
+            - 'null'
+          format: email
+          example: invited@example.com
+        roleCodes:
+          type: array
+          items:
+            type: string
+          example:
+            - user
+        status:
+          type: string
+          enum:
+            - active
+            - consumed
+            - expired
+            - revoked
+          example: active
+        maxUses:
+          type: integer
+          example: 20
+        useCount:
+          type: integer
+          example: 4
+        remainingUses:
+          type: integer
+          example: 16
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: null
+        consumedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: null
+        lastUsedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: '2026-04-28T11:00:00Z'
+        revokedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          example: null
+        createdByAccountId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-04-26T10:00:00Z'
+    AdminInvitationSummaryListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminInvitationSummary'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    AdminInvitationRevokeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type:
+            - string
+            - 'null'
+          maxLength: 400
+          example: Created for the wrong campaign.
     AdminInvitationCreateResponseEnvelope:
       type: object
       additionalProperties: false
@@ -4317,6 +4676,7 @@ components:
       required:
         - code
         - name
+        - isSystemRole
         - requiresMfa
         - permissionCodes
       properties:
@@ -4331,6 +4691,10 @@ components:
             - string
             - 'null'
           example: Full administrative control over the core user-management platform.
+        isSystemRole:
+          type: boolean
+          description: System roles are seeded by the backend. Custom roles created through the admin API return false.
+          example: true
         requiresMfa:
           type: boolean
           description: When true, newly created accounts with this role are marked for MFA enrollment. It does not retroactively block existing users at login.
@@ -4344,6 +4708,71 @@ components:
             - admin:users:write
             - admin:security:read
             - admin:settings:write
+    RoleCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - name
+      properties:
+        code:
+          type: string
+          minLength: 2
+          maxLength: 40
+          pattern: ^[a-zA-Z0-9_-]+$
+          example: volunteer
+        name:
+          type: string
+          minLength: 2
+          maxLength: 80
+          example: Volunteer
+        description:
+          type:
+            - string
+            - 'null'
+          example: Community volunteer account.
+        requiresMfa:
+          type: boolean
+          default: false
+          example: false
+        permissionCodes:
+          type: array
+          items:
+            type: string
+          example: []
+    RoleUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 80
+          example: Volunteer
+        description:
+          type:
+            - string
+            - 'null'
+          example: Volunteer role for temporary programme access.
+        requiresMfa:
+          type: boolean
+          example: false
+        permissionCodes:
+          type: array
+          items:
+            type: string
+          example: []
+    RoleDefinitionEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/RoleDefinition'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
     RoleDefinitionListEnvelope:
       type: object
       additionalProperties: false
@@ -4355,6 +4784,37 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RoleDefinition'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    PermissionDefinition:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - name
+      properties:
+        code:
+          type: string
+          example: admin:users:read
+        name:
+          type: string
+          example: Read users
+        description:
+          type:
+            - string
+            - 'null'
+          example: Read user summaries and related account details.
+    PermissionDefinitionListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionDefinition'
         meta:
           $ref: '#/components/schemas/ResponseMeta'
     AuditLogEntry:

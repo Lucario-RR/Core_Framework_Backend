@@ -167,7 +167,8 @@ Top-level account identity.
 | Column | Type | Null | Key | Notes |
 |---|---|---:|---|---|
 | id | UUID | No | PK | |
-| public_handle | VARCHAR(80) | Yes |  | optional normalized username; accepted as a login identifier |
+| public_handle | VARCHAR(80) | No |  | normalized unique username; accepted as a login identifier |
+| username_changed_at | TIMESTAMPTZ | Yes |  | last explicit username change, used by the username cooldown policy |
 | status_code | VARCHAR(30) | No |  | `pending`, `active`, `suspended`, `deleted` |
 | created_by_account_id | UUID | Yes | FK -> iam.account.id | null for self-registration |
 | activated_at | TIMESTAMPTZ | Yes |  | |
@@ -178,7 +179,7 @@ Top-level account identity.
 
 Recommended constraints:
 
-- unique `public_handle` when not null; use case-insensitive comparison in application code
+- unique case-insensitive `public_handle`
 - check allowed `status_code` values
 
 Design note:
@@ -295,6 +296,8 @@ Optional multi-phone support for recovery and fallback flows.
 | is_system_role | BOOLEAN | No |  | |
 | requires_mfa | BOOLEAN | No |  | supports role-level MFA policy |
 | created_at | TIMESTAMPTZ | No |  | |
+| updated_at | TIMESTAMPTZ | No |  | changes when an admin edits a role |
+| deleted_at | TIMESTAMPTZ | Yes |  | soft delete marker; deleted roles no longer grant roles/scopes |
 
 ### `iam.permission`
 
@@ -322,6 +325,7 @@ Optional multi-phone support for recovery and fallback flows.
 | role_id | UUID | No | PK/FK -> iam.role.id | |
 | granted_by_account_id | UUID | Yes | FK -> iam.account.id | |
 | granted_at | TIMESTAMPTZ | No |  | |
+| expires_at | TIMESTAMPTZ | Yes |  | null for indefinite role assignment; expired rows no longer contribute roles/scopes |
 
 ## 5.2 `auth` schema
 
@@ -628,6 +632,10 @@ Optional invite-only registration control.
 | revoked_at | TIMESTAMPTZ | Yes |  | |
 | created_at | TIMESTAMPTZ | No |  | |
 
+Design note:
+
+- Store only `invite_code_hash`, even when an admin provides a custom code string. The plaintext code is returned only in the create response.
+
 ### `auth.registration_approval`
 
 Optional staged approval before activation.
@@ -688,6 +696,7 @@ Recommended settings include:
 - MFA required for admins
 - MFA required for all users
 - password policy (`auth.password.policy`) with length, character-mix, special-character, and username/email exclusion rules
+- username change cooldown (`account.username.change_cooldown_seconds`)
 - password history depth
 - session idle timeout
 - session absolute lifetime
@@ -1087,7 +1096,7 @@ This section maps the feature scope directly to the schema so the design covers 
 | MFA / 2FA / recovery | TOTP, recovery codes, enable/disable 2FA, verify at login, revoke lost factor, force MFA for admins/all users/by role, backup method, suspicious recovery alert, passkey as MFA, SMS fallback | `auth.authenticator`, `auth.totp_factor`, `auth.recovery_code_set`, `auth.recovery_code`, `auth.passkey_credential`, `auth.passkey_registration_challenge`, `auth.passkey_authentication_challenge`, `auth.sms_factor`, `ops.notification`, `ops.notification_delivery`, `ops.system_setting` |
 | User self-service security | view account status, change password, change primary email, recent login activity, revoke own sessions, recovery code regeneration, see MFA methods, security notifications, suspicious login report, export/privacy requests | `iam.account`, `auth.session`, `ops.security_event`, `auth.authenticator`, `auth.recovery_code_set`, `ops.notification`, `ops.security_report`, `privacy.data_subject_request` |
 | Account restriction model | pending, active, suspended, frozen, deleted, freeze temporarily, suspend with reason, restore, require password reset, revoke sessions, disable login | `iam.account`, `iam.account_status_history`, `iam.account_restriction`, `auth.password_credential`, `auth.session`, `ops.audit_log` |
-| Admin portal | admin login, roles/permissions, user search/filter, user detail, freeze/unfreeze, suspend/restore, soft delete/recover, force logout, reset credentials, verify email, bulk actions, assign roles, required reason, audit trail, security events, active sessions, impersonation, approval workflow, case notes | `iam.role`, `iam.permission`, `iam.role_permission`, `iam.account_role`, `iam.account`, `iam.account_restriction`, `auth.session`, `ops.audit_log`, `ops.security_event`, `ops.admin_impersonation_session`, `ops.admin_action_approval`, `ops.admin_case`, `ops.admin_case_note` |
+| Admin portal | admin login, roles/permissions, custom role creation/editing, user search/filter, user detail, freeze/unfreeze, suspend/restore, soft delete/recover, force logout, reset credentials, verify email, bulk actions, assign roles with optional expiry, required reason, audit trail, security events, active sessions, impersonation, approval workflow, case notes | `iam.role`, `iam.permission`, `iam.role_permission`, `iam.account_role`, `iam.account`, `iam.account_restriction`, `auth.session`, `ops.audit_log`, `ops.security_event`, `ops.admin_impersonation_session`, `ops.admin_action_approval`, `ops.admin_case`, `ops.admin_case_note` |
 | System settings and policy | registration toggle, email verification required, MFA policies, password policy, lockout policy, session policy, deletion policy, allowed/blocked email domains, invite-only mode, bootstrap admin flag, passkey enablement, geo/IP risk, maintenance mode | `ops.setting_definition`, `ops.system_setting`, `ops.email_domain_rule`, `auth.registration_invite` |
 | Security monitoring and risk controls | failed login tracking, rate limiting, lockout, IP capture, request ID, suspicious event logging, admin action audit, device fingerprint, impossible travel, new-IP alert, credential stuffing detection, brute-force detection, reset abuse detection, adaptive challenge, risk scoring, TOR/proxy heuristics | `ops.security_event`, `auth.account_lockout`, `auth.login_challenge`, `auth.session`, `ops.audit_log`, `ops.notification`, `ops.outbox_event` |
 | Error handling and logging | stable codes, request correlation, safe logs, separate audit/security logs, severity levels, taxonomy, operator diagnostics, retry-safe idempotency | `ops.audit_log`, `ops.security_event`, `ops.idempotency_key` |
@@ -1102,6 +1111,7 @@ Recommended high-value indexes:
 - one active primary email per account
 - `iam.account_phone(e164_phone_number)` filtered to active login-enabled rows
 - `auth.registration_invite(invite_code_hash)` unique
+- `iam.account_role(account_id, expires_at)` for active role lookup and expiry cleanup
 - `iam.account_status_history(account_id, changed_at desc)`
 - `iam.account_restriction(account_id, status_code, ends_at)`
 - `auth.authenticator(account_id, authenticator_type, status)`

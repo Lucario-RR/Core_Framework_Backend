@@ -7,9 +7,10 @@ use axum::{
 
 use crate::{
     api::contracts::{
-        AdminInvitationCreateRequest, AdminSystemSettingUpdateRequest, AdminUserBulkActionRequest,
-        AdminUserCreateRequest, AdminUserListQuery, AdminUserUpdateRequest, PasswordPolicy,
-        SearchPaginationQuery, SessionBulkRevokeRequest,
+        AdminInvitationCreateRequest, AdminInvitationListQuery, AdminInvitationRevokeRequest,
+        AdminSystemSettingUpdateRequest, AdminUserBulkActionRequest, AdminUserCreateRequest,
+        AdminUserListQuery, AdminUserUpdateRequest, PasswordPolicy, RoleCreateRequest,
+        RoleUpdateRequest, SearchPaginationQuery, SessionBulkRevokeRequest,
     },
     auth,
     request_context::RequestContext,
@@ -20,9 +21,21 @@ use crate::{
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/admin/roles", get(list_roles))
+        .route("/admin/roles", get(list_roles).post(create_role))
+        .route(
+            "/admin/roles/{role_code}",
+            patch(update_role).delete(delete_role),
+        )
+        .route("/admin/permissions", get(list_permissions))
         .route("/admin/overview", get(get_admin_overview))
-        .route("/admin/invitations", post(create_admin_invitations))
+        .route(
+            "/admin/invitations",
+            get(list_admin_invitations).post(create_admin_invitations),
+        )
+        .route(
+            "/admin/invitations/{invitation_id}/revoke",
+            post(revoke_admin_invitation),
+        )
         .route(
             "/admin/password-policy",
             get(get_admin_password_policy).patch(update_admin_password_policy),
@@ -80,6 +93,55 @@ async fn list_roles(
     Ok(Json(envelope(&context.request_id, roles)))
 }
 
+async fn list_permissions(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let _ = admin_auth(&state, &headers).await?;
+    let permissions = admin_service::list_permissions(&state).await?;
+    Ok(Json(envelope(&context.request_id, permissions)))
+}
+
+async fn create_role(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Json(request): Json<RoleCreateRequest>,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let auth_context = admin_auth(&state, &headers).await?;
+    let role = admin_service::create_role(&state, &auth_context, &context, request).await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(envelope(&context.request_id, role)),
+    ))
+}
+
+async fn update_role(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Path(role_code): Path<String>,
+    Json(request): Json<RoleUpdateRequest>,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let auth_context = admin_auth(&state, &headers).await?;
+    let role =
+        admin_service::update_role(&state, &auth_context, &context, &role_code, request).await?;
+    Ok(Json(envelope(&context.request_id, role)))
+}
+
+async fn delete_role(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Path(role_code): Path<String>,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let auth_context = admin_auth(&state, &headers).await?;
+    let acknowledgement =
+        admin_service::delete_role(&state, &auth_context, &context, &role_code).await?;
+    Ok(Json(envelope(&context.request_id, acknowledgement)))
+}
+
 async fn get_admin_overview(
     State(state): State<AppState>,
     Extension(context): Extension<RequestContext>,
@@ -103,6 +165,43 @@ async fn create_admin_invitations(
         axum::http::StatusCode::CREATED,
         Json(envelope(&context.request_id, invitations)),
     ))
+}
+
+async fn list_admin_invitations(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Query(query): Query<AdminInvitationListQuery>,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let _ = admin_auth(&state, &headers).await?;
+    let (offset, limit) = pagination(query.cursor.as_deref(), query.limit)?;
+    let (invitations, next_cursor) =
+        admin_service::list_admin_invitations(&state, query, offset, limit).await?;
+    Ok(Json(envelope_with_cursor(
+        &context.request_id,
+        invitations,
+        next_cursor,
+    )))
+}
+
+async fn revoke_admin_invitation(
+    State(state): State<AppState>,
+    Extension(context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Path(invitation_id): Path<uuid::Uuid>,
+    maybe_body: Option<Json<AdminInvitationRevokeRequest>>,
+) -> crate::error::AppResult<impl axum::response::IntoResponse> {
+    let auth_context = admin_auth(&state, &headers).await?;
+    let request = maybe_body.map(|Json(value)| value).unwrap_or_default();
+    let acknowledgement = admin_service::revoke_admin_invitation(
+        &state,
+        &auth_context,
+        &context,
+        invitation_id,
+        request,
+    )
+    .await?;
+    Ok(Json(envelope(&context.request_id, acknowledgement)))
 }
 
 async fn get_admin_password_policy(
